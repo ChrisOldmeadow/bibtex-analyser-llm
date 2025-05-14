@@ -330,74 +330,10 @@ def dashboard_command(args: argparse.Namespace) -> None:
         args: Parsed command line arguments
     """
     try:
-        import dash
-        from dash import dcc, html, Input, Output
-        import plotly.express as px
-        import pandas as pd
-        
-        # Load data if a default file exists
-        data_file = "tagged_abstracts.csv"
-        if os.path.exists(data_file):
-            df = pd.read_csv(data_file)
-            has_data = True
-        else:
-            df = pd.DataFrame()
-            has_data = False
-        
-        # Initialize the Dash app
-        app = dash.Dash(__name__)
-        
-        # Define the layout
-        app.layout = html.Div([
-            html.H1("Bibtex Analyzer Dashboard"),
-            
-            # File upload section
-            dcc.Upload(
-                id='upload-data',
-                children=html.Div([
-                    'Drag and Drop or ',
-                    html.A('Select Files')
-                ]),
-                style={
-                    'width': '100%',
-                    'height': '60px',
-                    'lineHeight': '60px',
-                    'borderWidth': '1px',
-                    'borderStyle': 'dashed',
-                    'borderRadius': '5px',
-                    'textAlign': 'center',
-                    'margin': '10px 0'
-                },
-                multiple=False
-            ),
-            
-            # Main content
-            html.Div([
-                # Left panel
-                html.Div([
-                    html.H3("Tag Cloud"),
-                    dcc.Graph(id='wordcloud-plot')
-                ], style={'width': '48%', 'display': 'inline-block', 'padding': '10px'}),
-                
-                # Right panel
-                html.Div([
-                    html.H3("Tag Frequencies"),
-                    dcc.Graph(id='frequencies-plot')
-                ], style={'width': '48%', 'display': 'inline-block', 'padding': '10px'})
-            ]),
-            
-            # Hidden div to store the data
-            html.Div(id='data-store', style={'display': 'none'})
-        ])
-        
-        # Callbacks would go here in a real implementation
-        
-        # Run the app
-        app.run_server(debug=args.debug, port=args.port)
-        
+        from .dashboard import run_dashboard
+        run_dashboard(debug=args.debug, port=args.port)
     except ImportError as e:
-        logger.error("Dashboard dependencies not installed. Install with 'pip install dash pandas plotly'")
-        sys.exit(1)
+        logger.error("Dashboard dependencies not installed. Install with 'pip install dash dash-bootstrap-components plotly pandas'")
 
 def main() -> None:
     """Main entry point for the Bibtex Analyzer CLI."""

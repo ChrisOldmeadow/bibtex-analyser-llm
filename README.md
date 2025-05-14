@@ -13,7 +13,13 @@ A powerful tool for analyzing and visualizing BibTeX bibliographies using AI-pow
   - Interactive tag networks
 - **Filtering & Searching**: Easily filter and search through your bibliography
 - **Export Options**: Save results in multiple formats (CSV, HTML, PNG, PDF)
-- **Interactive Dashboard**: Web-based interface for exploring your bibliography
+- **Interactive Dashboard**: Web-based interface for exploring your bibliography with:
+  - File upload and processing
+  - Real-time word cloud generation
+  - Tag frequency analysis
+  - Data table with filtering and sorting
+  - Export functionality
+  - Customizable visualization options
 
 ## Installation
 
@@ -30,14 +36,14 @@ A powerful tool for analyzing and visualizing BibTeX bibliographies using AI-pow
 pip install bibtex-analyzer
 
 # Or install directly from GitHub
-pip install git+https://github.com/yourusername/bibtex-analyzer-gpt.git
+pip install git+https://github.com/ChrisOldmeadow/bibtex-analyzer-gpt.git
 ```
 
 #### 2. From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/bibtex-analyzer-gpt.git
+git clone https://github.com/ChrisOldmeadow/bibtex-analyzer-gpt.git
 cd bibtex-analyzer-gpt
 
 # Install in development mode
@@ -69,6 +75,12 @@ bibtex-analyzer analyze papers.bib --output results.csv --tag-samples 50 --wordc
 # --wordcloud html    # Generate interactive HTML word cloud
 # --wordcloud both    # Generate both PNG and HTML word clouds
 # (no --wordcloud)    # Skip word cloud generation
+
+# Launch the interactive dashboard
+bibtex-analyzer dashboard
+# Optional arguments:
+# --port 8050        # Port to run the dashboard on (default: 8050)
+# --debug            # Run in debug mode
 
 # Generate visualizations from tagged data
 bibtex-analyzer visualize results.csv
@@ -181,6 +193,121 @@ options:
 3. Commit your changes
 4. Push to the branch
 5. Create a pull request
+
+## Dashboard Features
+
+The interactive dashboard provides a user-friendly web interface for exploring your bibliography. Here's what you can do:
+
+### Upload and Process
+- Drag and drop your BibTeX file (.bib) or click to browse
+- View real-time processing status and logs
+- See the number of entries processed and tags generated
+
+### Visualization Options
+- **Word Cloud**: Generate beautiful word clouds from your paper tags
+  - Toggle between static (PNG) and interactive (HTML) versions
+  - Customize colors, size, and number of words
+  - Click on words to see related papers
+- **Tag Frequencies**: Bar chart showing most common tags
+  - Hover to see exact counts
+  - Click to filter papers by tag
+
+### Data Table
+- Sort and filter your bibliography
+- Search by title, author, or tags
+- View detailed paper information including abstract and tags
+- Export filtered results to CSV
+
+### Configuration
+- Adjust tag generation settings
+- Choose different OpenAI models
+- Customize visualization appearance
+
+## Advanced Configuration
+
+### Environment Variables
+
+You can configure the application using the following environment variables in your `.env` file:
+
+```env
+# Required
+OPENAI_API_KEY=your_api_key_here
+
+# Optional
+DEFAULT_MODEL=gpt-3.5-turbo  # Default model for tag generation
+METHODS_MODEL=gpt-4          # Model for statistical methods
+LOG_LEVEL=INFO               # Logging level (DEBUG, INFO, WARNING, ERROR)
+UPLOAD_FOLDER=./uploads      # Directory for file uploads
+PORT=8050                    # Port for the dashboard
+DEBUG=False                  # Run in debug mode
+```
+
+### Customizing Tag Generation
+
+You can customize the tag generation prompt by creating a `prompts` directory in your project root and adding a `tag_generation.md` file with your custom prompt. The default prompt includes instructions for generating relevant, specific tags for academic papers.
+
+## Examples
+
+### Example 1: Basic Usage
+
+```bash
+# Analyze a BibTeX file and generate tags
+bibtex-analyzer analyze papers.bib --output results.csv
+
+# Launch the dashboard to explore results
+bibtex-analyzer dashboard
+```
+
+### Example 2: Advanced Analysis
+
+```bash
+# Use more samples for better tag quality
+bibtex-analyzer analyze papers.bib \
+    --output results.csv \
+    --tag-samples 100 \
+    --model gpt-4
+
+# Generate both PNG and HTML word clouds
+bibtex-analyzer visualize results.csv --wordcloud both
+```
+
+### Example 3: Docker Deployment
+
+You can also run the dashboard in a Docker container:
+
+```bash
+# Build the Docker image
+docker build -t bibtex-analyzer .
+
+# Run the container
+docker run -p 8050:8050 -e OPENAI_API_KEY=your_api_key_here bibtex-analyzer
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Missing API Key**
+   - Ensure you've set the `OPENAI_API_KEY` environment variable
+   - Check that your API key has sufficient credits
+
+2. **Processing Large Files**
+   - For large bibliographies, use the `--subset-size` parameter
+   - Consider running on a machine with more memory
+
+3. **Word Cloud Generation**
+   - If the word cloud is empty, check that tags were generated correctly
+   - Try adjusting the minimum word frequency
+
+## Contributing
+
+Cntributions are welcome! Here's how to get started:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/new-feature`
+3. Commit your changes: `git commit -m 'Add some feature'`
+4. Push to the branch: `git push origin feature/new-feature`
+5. Open a pull request
 
 ## License
 
