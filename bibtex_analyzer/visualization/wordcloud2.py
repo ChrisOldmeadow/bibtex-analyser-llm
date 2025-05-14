@@ -1,6 +1,7 @@
 """Word cloud visualization using wordcloud2.js for interactive word clouds."""
 import json
 import os
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd

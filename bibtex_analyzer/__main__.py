@@ -61,8 +61,8 @@ def parse_args(args: List[str]) -> argparse.Namespace:
                               help='Number of samples to use for tag generation (default: 30)')
     analyze_parser.add_argument('--subset-size', type=int, default=100,
                               help='Process only a subset of entries (0 for all, default: 100)')
-    analyze_parser.add_argument('--wordcloud-format', type=str, choices=['png', 'html', 'both'], default='png',
-                              help='Format for word cloud output (default: png)')
+    analyze_parser.add_argument('--wordcloud', type=str, nargs='?', const='png', choices=['png', 'html', 'both'],
+                              help='Generate word cloud (default: png if no value provided, omit to skip)')
     analyze_parser.add_argument(
         "--methods-model",
         default="gpt-4",
@@ -218,10 +218,14 @@ def analyze_command(args: argparse.Namespace) -> None:
                 logger.warning("No valid tags found for word cloud generation")
                 return
                 
+            # Skip word cloud generation if not requested
+            if not hasattr(args, 'wordcloud') or not args.wordcloud:
+                return
+                
             # Generate word cloud in the requested format(s)
             base_path = output_path.with_suffix('')
             
-            if args.wordcloud_format in ['png', 'both']:
+            if args.wordcloud in ['png', 'both']:
                 try:
                     from wordcloud import WordCloud
                     import matplotlib.pyplot as plt
@@ -251,7 +255,7 @@ def analyze_command(args: argparse.Namespace) -> None:
                 except Exception as e:
                     logger.error(f"Error generating PNG word cloud: {e}")
             
-            if args.wordcloud_format in ['html', 'both']:
+            if args.wordcloud in ['html', 'both']:
                 try:
                     from .visualization import create_interactive_wordcloud
                     

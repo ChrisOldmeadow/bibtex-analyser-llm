@@ -7,7 +7,8 @@ A powerful tool for analyzing and visualizing BibTeX bibliographies using AI-pow
 - **BibTeX Processing**: Extract and process BibTeX entries from `.bib` files
 - **AI-Powered Tagging**: Generate topic tags using OpenAI's GPT models
 - **Interactive Visualizations**:
-  - Word clouds of paper topics
+  - Optional word clouds (static PNG and/or interactive HTML)
+  - Clickable word clouds that link to relevant papers
   - Tag frequency analysis
   - Interactive tag networks
 - **Filtering & Searching**: Easily filter and search through your bibliography
@@ -59,6 +60,19 @@ pip install -r requirements-dev.txt
 ### Command Line Interface
 
 ```bash
+# Analyze a BibTeX file and generate tags with optional word cloud
+bibtex-analyzer analyze papers.bib --output results.csv --tag-samples 50 --wordcloud
+
+# Word cloud options:
+# --wordcloud         # Default: generate PNG word cloud
+# --wordcloud png     # Generate PNG word cloud
+# --wordcloud html    # Generate interactive HTML word cloud
+# --wordcloud both    # Generate both PNG and HTML word clouds
+# (no --wordcloud)    # Skip word cloud generation
+
+# Generate visualizations from tagged data
+bibtex-analyzer visualize results.csv
+
 # Analyze a BibTeX file and generate tags
 # Using default settings (30 samples for tag generation, tag all entries)
 bibtex-analyzer analyze input.bib --output tagged_papers.csv
