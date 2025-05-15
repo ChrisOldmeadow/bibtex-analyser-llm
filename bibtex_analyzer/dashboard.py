@@ -376,6 +376,43 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
 
 # Utility functions for dashboard callbacks
 
+def create_progress_callback(update_log_fn: callable, progress_interval: float) -> callable:
+    """Create a callback function for tracking progress during processing.
+    
+    Args:
+        update_log_fn: Function to update logs
+        progress_interval: Progress increment per step
+        
+    Returns:
+        Function that updates progress and logs
+    """
+    progress = 0
+    
+    def progress_callback(message: Optional[str] = None) -> List:
+        """Update progress and log message.
+        
+        Args:
+            message: Optional message to log
+            
+        Returns:
+            List with updated values for callback outputs
+        """
+        nonlocal progress
+        progress = min(100, progress + progress_interval)
+        
+        log = update_log_fn(message) if message else ""
+        
+        return [
+            no_update,  # data-store
+            no_update,  # tagged-data-store
+            progress,   # process-progress value
+            f"Processing: {int(progress)}%",  # process-progress label
+            no_update,  # upload-status
+            log        # processing-logs
+        ]
+    
+    return progress_callback
+
 def create_logger() -> callable:
     """Create a logger function for tracking processing steps.
     
@@ -552,142 +589,27 @@ def handle_process_bibtex(n_clicks: Optional[int], filename: Optional[str],
     file_path = upload_dir / filename
     update_log = create_logger()
     
-    if not file_path.exists():
-        error_msg = "Error: File not found"
-        return (
-            no_update,
-            no_update,
-            0,
-            error_msg,
-            dbc.Alert(error_msg, color="danger"),
-            update_log(error_msg)
-        )
+    # Validate file exists
+    error_response = validate_file_exists(file_path, update_log)
+    if error_response:
+        return error_response
     
     try:
-        # Process the BibTeX file
-        try:
-            log = update_log(f"Starting processing of {filename}")
-            entries = process_bibtex_file(file_path)
-            log = update_log(f"Found {len(entries)} entries in the BibTeX file")
-            
-            if not entries:
-                error_msg = "Error: No entries found in the BibTeX file"
-                return (
-                    no_update,
-                    no_update,
-                    0,
-                    error_msg,
-                    dbc.Alert(error_msg, color="danger"),
-                    update_log(error_msg)
-                )
-            
-            # Convert to DataFrame
-            df = pd.DataFrame(entries)
-            
-            # Filter out entries without abstracts
-            df = df[df['abstract'].notna() & (df['abstract'] != '')]
-            log = update_log(f"Filtered to {len(df)} entries with abstracts")
-            
-            if df.empty:
-                error_msg = "Error: No entries with abstracts found"
-                return (
-                    no_update,
-                    no_update,
-                    0,
-                    error_msg,
-                    dbc.Alert(error_msg, color="danger"),
-                    update_log(error_msg)
-                )
-                
-        except Exception as e:
-            error_msg = f"Error processing file: {str(e)}"
-            return (
-                no_update,
-                no_update,
-                0,
-                error_msg,
-                dbc.Alert(error_msg, color="danger"),
-                update_log(error_msg)
-            )
+        # Process BibTeX entries
+        df, error_response = process_bibtex_entries(file_path, update_log)
+        if error_response:
+            return error_response
         
-        # Generate tags
-        log = update_log(f"Initializing tag generator with model: {model}")
-        tag_generator = TagGenerator(model=model)
-        
-        # Update progress
-        progress = 0
+        # Set up progress tracking
         progress_interval = 100 / min(tag_sample_size, len(df))
+        progress_cb = create_progress_callback(update_log, progress_interval)
         
-        # Generate tags for a subset of entries
-        if tag_sample_size > 0:
-            sample_size = min(tag_sample_size, len(df))
-            log = update_log(f"Generating tags for {sample_size} entries...")
-            
-            df_sample = df.sample(sample_size)
-            entries = df_sample.to_dict('records')
-            
-            log = update_log("Starting tag generation...")
-            try:
-                tags = tag_generator.generate_tags_for_abstracts(entries)
-                log = update_log(f"Generated {len(tags) if tags else 0} unique tags")
-                
-                if tags:
-                    log = update_log("Sample tags: " + ", ".join(list(tags)[:10]) + ("..." if len(tags) > 10 else ""))
-                
-                # Assign tags using the TagGenerator's method (same as CLI)
-                log = update_log("Assigning tags to entries using TagGenerator...")
-                
-                # Convert entries to list of dicts if needed
-                entries_list = df.to_dict('records')
-                
-                # Filter out entries without abstracts
-                entries_with_abstracts = [e for e in entries_list if e.get('abstract')]
-                if len(entries_with_abstracts) < len(entries_list):
-                    log = update_log(f"Skipped {len(entries_list) - len(entries_with_abstracts)} entries without abstracts")
-                
-                if not entries_with_abstracts:
-                    log = update_log("No entries with abstracts found. Cannot assign tags.")
-                else:
-                    # Apply max entries limit if specified
-                    if max_entries_to_tag and max_entries_to_tag > 0:
-                        import random
-                        max_entries = min(max_entries_to_tag, len(entries_with_abstracts))
-                        entries_to_tag = random.sample(entries_with_abstracts, max_entries)
-                        log = update_log(f"Randomly selected {max_entries} entries to tag (from {len(entries_with_abstracts)} with abstracts)")
-                    else:
-                        entries_to_tag = entries_with_abstracts
-                        log = update_log(f"Tagging all {len(entries_to_tag)} entries with abstracts")
-                    
-                    # Use the TagGenerator's method to assign tags
-                    log = update_log(f"Assigning tags to {len(entries_to_tag)} entries...")
-                    tagged_entries = tag_generator.assign_tags_to_abstracts(entries_to_tag, tags)
-                    
-                    # Update the original dataframe with the tagged entries
-                    df = pd.DataFrame(tagged_entries + 
-                                   [e for e in entries_list if not e.get('abstract')])
-                    
-                    # Log the results
-                    tagged_count = len([e for e in tagged_entries if e.get('tags')])
-                    log = update_log(f"Successfully assigned tags to {tagged_count} out of {len(entries_with_abstracts)} entries with abstracts")
-                    log = update_log(f"Total entries with tags: {df['tags'].count()}")
-                    
-                    # Show a sample of tagged entries
-                    sample_size = min(3, len(tagged_entries))
-                    if sample_size > 0:
-                        sample = tagged_entries[:sample_size]
-                        for entry in sample:
-                            log = update_log(f"Sample - ID: {entry.get('ID', 'N/A')}, Tags: {entry.get('tags', 'None')}")
-                
-            except Exception as e:
-                error_msg = f"Error during tag generation: {str(e)}"
-                return (
-                    no_update,
-                    no_update,
-                    progress,
-                    f"Error: {str(e)}",
-                    dbc.Alert(error_msg, color="danger"),
-                    update_log(error_msg)
-                )
+        # Generate and assign tags
+        df, error_response = generate_and_assign_tags(
+            df, model, tag_sample_size, max_entries_to_tag, update_log, progress_cb
+        )
+        if error_response:
+            return error_response
         
         # Save the results
         log = update_log("Saving results...")
@@ -705,17 +627,15 @@ def handle_process_bibtex(n_clicks: Optional[int], filename: Optional[str],
         )
         
     except Exception as e:
-        progress = 0 if 'progress' not in locals() else progress
         error_msg = f"Unexpected error: {str(e)}"
         return (
             no_update,
             no_update,
-            progress,
+            0,  # Reset progress on unexpected error
             f"Error: {str(e)}",
             dbc.Alert(error_msg, color="danger"),
             update_log(error_msg)
         )
-
 def handle_generate_word_cloud(n_clicks: Optional[int], initial_load_ts: Optional[int], 
                          df_json: Optional[str], max_words: int, color_scheme: str, 
                          bg_color: str, wc_type: str) -> Tuple:
@@ -1353,6 +1273,175 @@ def handle_download_word_cloud(n_clicks: Optional[int], img_data: Optional[str],
         return dict(content=html_data, filename="bibtex_wordcloud.html")
     
     raise PreventUpdate
+
+def validate_file_exists(file_path: Path, update_log: callable) -> Optional[Tuple]:
+    """Validate that a file exists and return error if not.
+    
+    Args:
+        file_path: Path to the file
+        update_log: Function to update logs
+        
+    Returns:
+        Error tuple if file not found, None if file exists
+    """
+    if not file_path.exists():
+        error_msg = "Error: File not found"
+        return (
+            no_update,
+            no_update,
+            0,
+            error_msg,
+            dbc.Alert(error_msg, color="danger"),
+            update_log(error_msg)
+        )
+    return None
+
+def process_bibtex_entries(file_path: Path, update_log: callable) -> Tuple[Optional[pd.DataFrame], Optional[Tuple]]:
+    """Process BibTeX file and convert to DataFrame.
+    
+    Args:
+        file_path: Path to the BibTeX file
+        update_log: Function to update logs
+        
+    Returns:
+        Tuple with DataFrame and error tuple (if error occurred)
+    """
+    try:
+        log = update_log(f"Starting processing of {file_path.name}")
+        entries = process_bibtex_file(file_path)
+        log = update_log(f"Found {len(entries)} entries in the BibTeX file")
+        
+        if not entries:
+            error_msg = "Error: No entries found in the BibTeX file"
+            return None, (
+                no_update,
+                no_update,
+                0,
+                error_msg,
+                dbc.Alert(error_msg, color="danger"),
+                update_log(error_msg)
+            )
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(entries)
+        
+        # Filter out entries without abstracts
+        df = df[df['abstract'].notna() & (df['abstract'] != '')]
+        log = update_log(f"Filtered to {len(df)} entries with abstracts")
+        
+        if df.empty:
+            error_msg = "Error: No entries with abstracts found"
+            return None, (
+                no_update,
+                no_update,
+                0,
+                error_msg,
+                dbc.Alert(error_msg, color="danger"),
+                update_log(error_msg)
+            )
+        
+        return df, None
+    except Exception as e:
+        error_msg = f"Error processing file: {str(e)}"
+        return None, (
+            no_update,
+            no_update,
+            0,
+            error_msg,
+            dbc.Alert(error_msg, color="danger"),
+            update_log(error_msg)
+        )
+
+def generate_and_assign_tags(df: pd.DataFrame, model: str, tag_sample_size: int, 
+                          max_entries_to_tag: int, update_log: callable, 
+                          progress_callback: callable) -> Tuple[Optional[pd.DataFrame], Optional[Tuple]]:
+    """Generate tags and assign them to entries.
+    
+    Args:
+        df: DataFrame with bibtex entries
+        model: Model to use for tag generation
+        tag_sample_size: Number of entries to sample for tag generation
+        max_entries_to_tag: Maximum entries to tag
+        update_log: Function to update logs
+        progress_callback: Function to update progress
+        
+    Returns:
+        Tuple with updated DataFrame and error tuple (if error occurred)
+    """
+    try:
+        # Generate tags
+        log = update_log(f"Initializing tag generator with model: {model}")
+        tag_generator = TagGenerator(model=model)
+        
+        # Generate tags for a subset of entries
+        if tag_sample_size > 0:
+            sample_size = min(tag_sample_size, len(df))
+            log = update_log(f"Generating tags for {sample_size} entries...")
+            
+            df_sample = df.sample(sample_size)
+            entries = df_sample.to_dict('records')
+            
+            log = update_log("Starting tag generation...")
+            tags = tag_generator.generate_tags_for_abstracts(entries)
+            log = update_log(f"Generated {len(tags) if tags else 0} unique tags")
+            
+            if tags:
+                log = update_log("Sample tags: " + ", ".join(list(tags)[:10]) + ("..." if len(tags) > 10 else ""))
+            
+            # Assign tags using the TagGenerator's method
+            log = update_log("Assigning tags to entries using TagGenerator...")
+            
+            # Convert entries to list of dicts
+            entries_list = df.to_dict('records')
+            
+            # Filter out entries without abstracts
+            entries_with_abstracts = [e for e in entries_list if e.get('abstract')]
+            if len(entries_with_abstracts) < len(entries_list):
+                log = update_log(f"Skipped {len(entries_list) - len(entries_with_abstracts)} entries without abstracts")
+            
+            if not entries_with_abstracts:
+                log = update_log("No entries with abstracts found. Cannot assign tags.")
+            else:
+                # Apply max entries limit if specified
+                if max_entries_to_tag and max_entries_to_tag > 0:
+                    max_entries = min(max_entries_to_tag, len(entries_with_abstracts))
+                    entries_to_tag = random.sample(entries_with_abstracts, max_entries)
+                    log = update_log(f"Randomly selected {max_entries} entries to tag (from {len(entries_with_abstracts)} with abstracts)")
+                else:
+                    entries_to_tag = entries_with_abstracts
+                    log = update_log(f"Tagging all {len(entries_to_tag)} entries with abstracts")
+                
+                # Use the TagGenerator's method to assign tags
+                log = update_log(f"Assigning tags to {len(entries_to_tag)} entries...")
+                tagged_entries = tag_generator.assign_tags_to_abstracts(entries_to_tag, tags)
+                
+                # Update the original dataframe with the tagged entries
+                df = pd.DataFrame(tagged_entries + 
+                               [e for e in entries_list if not e.get('abstract')])
+                
+                # Log the results
+                tagged_count = len([e for e in tagged_entries if e.get('tags')])
+                log = update_log(f"Successfully assigned tags to {tagged_count} out of {len(entries_with_abstracts)} entries with abstracts")
+                log = update_log(f"Total entries with tags: {df['tags'].count()}")
+                
+                # Show a sample of tagged entries
+                sample_size = min(3, len(tagged_entries))
+                if sample_size > 0:
+                    sample = tagged_entries[:sample_size]
+                    for entry in sample:
+                        log = update_log(f"Sample - ID: {entry.get('ID', 'N/A')}, Tags: {entry.get('tags', 'None')}")
+        
+        return df, None
+    except Exception as e:
+        error_msg = f"Error during tag generation: {str(e)}"
+        return None, (
+            no_update,
+            no_update,
+            progress_callback(None)[2],  # Get current progress value
+            f"Error: {str(e)}",
+            dbc.Alert(error_msg, color="danger"),
+            update_log(error_msg)
+        )
 
 def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     """Register all Dash callbacks.
