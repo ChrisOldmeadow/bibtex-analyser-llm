@@ -198,10 +198,40 @@ options:
 
 The interactive dashboard provides a user-friendly web interface for exploring your bibliography. Here's what you can do:
 
-### Upload and Process
+### 1. Upload & Process
 - Drag and drop your BibTeX file (.bib) or click to browse
-- View real-time processing status and logs
-- See the number of entries processed and tags generated
+- Upload your BibTeX file
+- Configure tag generation settings:
+  - Tag sample size
+  - Maximum entries to tag
+  - Model selection (GPT-3.5 Turbo or GPT-4)
+- Monitor processing progress with real-time logs
+
+### 2. Word Cloud Customization
+- Adjust word cloud settings:
+  - Maximum number of words
+  - Color schemes (Viridis, Plasma, Inferno, Magma, Cividis, Rainbow)
+  - Background colors (White, Black, Light Gray, Dark)
+- Download word cloud as PNG or interactive HTML
+
+### 3. Data Table
+- View all entries with key information:
+  - Year
+  - Title
+  - Authors
+  - Journal
+  - DOI
+  - Abstract
+  - Volume
+  - Issue
+  - Pages
+  - Keywords
+- Filter entries by tags using a searchable dropdown
+- Download BibTeX file with two options:
+  - Download All Entries: Get the complete bibliography
+  - Download Filtered Entries: Only get entries matching your selected tags
+- Entries include all available metadata fields and generated keywords
+
 
 ### Visualization Options
 - **Word Cloud**: Generate beautiful word clouds from your paper tags
