@@ -1120,12 +1120,6 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         if df.empty:
             return html.Div("No data available.", className="text-muted"), []
         
-        # Format the display
-        if 'authors' in df.columns:
-            df['authors'] = df['authors'].apply(
-                lambda x: ', '.join(x) if isinstance(x, list) else x
-            )
-        
         # Get unique tags for filter options
         all_tags = set()
         for tags_str in df['tags']:
@@ -1135,10 +1129,22 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         
         tag_options = [{'label': tag, 'value': tag} for tag in sorted(all_tags)]
         
+        # Select only the available columns from our desired set
+        columns_to_show = ['year', 'title', 'authors', 'journal', 'doi']
+        available_columns = [col for col in columns_to_show if col in df.columns]
+        
+        # Format the display for available columns
+        if 'authors' in df.columns:
+            df['authors'] = df['authors'].apply(
+                lambda x: ', '.join(x) if isinstance(x, list) else x
+            )
+        
+        df = df[available_columns]
+        
         # Create the data table
         table = dash_table.DataTable(
             id='data-table',
-            columns=[{"name": i, "id": i} for i in df.columns],
+            columns=[{"name": i, "id": i} for i in columns_to_show],
             data=df.to_dict('records'),
             page_size=10,
             style_table={'overflowX': 'auto'},
