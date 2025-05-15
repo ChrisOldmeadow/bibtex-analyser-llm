@@ -16,6 +16,7 @@ from dash import dcc, html, Input, Output, State, callback, dash_table, no_updat
 from dash.exceptions import PreventUpdate
 from datetime import datetime
 import matplotlib
+
 # Use the 'Agg' backend to avoid GUI threading issues
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -49,6 +50,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
     
     # Add initial store for tracking first load
     app.layout = html.Div([
+        # Stores
         dcc.Store(id='initial-load', data=True),
         dcc.Store(id='data-store'),
         dcc.Store(id='tagged-data-store'),
@@ -74,7 +76,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
-                        dbc.CardHeader("1. Upload BibTeX File"),
+                        dbc.CardHeader("1. Upload & Process BibTeX File"),
                         dbc.CardBody([
                             dcc.Upload(
                                 id='upload-bibtex',
@@ -173,7 +175,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                     
                     # Word cloud customization
                     dbc.Card([
-                        dbc.CardHeader("2. Customize Word Cloud"),
+                        dbc.CardHeader("3. Customize Word Cloud"),
                         dbc.CardBody([
                             dbc.Row([
                                 dbc.Col([
@@ -313,18 +315,28 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                         ]),
                         
                         dbc.Tab(label="Data Table", tab_id="table-tab", children=[
-                            html.Div(id="data-table-container", className="mt-3"),
-                            dbc.Row(
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Filter by Tags", html_for="tag-filter"),
+                                    dcc.Dropdown(
+                                        id="tag-filter",
+                                        options=[],
+                                        multi=True,
+                                        searchable=True,
+                                        placeholder="Select tags to filter...",
+                                        className="mb-3"
+                                    ),
+                                ], width=4),
                                 dbc.Col([
                                     dbc.Button(
-                                        "Download Data",
-                                        id="download-data-button",
-                                        color="success",
-                                        className="mt-3 w-100"
-                                    ),
-                                ], width=6, className="mx-auto"),
-                                className="mb-3"
-                            ),
+                                        "Download Tagged File",
+                                        id="download-tagged-btn",
+                                        color="primary",
+                                        className="mb-3"
+                                    )
+                                ], width=4),
+                            ]),
+                            html.Div(id="data-table-container", className="mt-3"),
                         ]),
                     ], id="tabs", active_tab="wordcloud-tab"),
                 ], md=8),
@@ -1029,19 +1041,84 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         return [], ""
     
     @app.callback(
-        Output('data-table-container', 'children'),
-        [Input('tagged-data-store', 'data')],
-        prevent_initial_call=True
+        Output('data-table', 'data'),
+        [Input('tag-filter', 'value')],
+        [State('tagged-data-store', 'data')]
     )
-    def update_data_table(df_json):
-        """Update the data table."""
+    def update_data_table(selected_tags, df_json):
+        """Update the data table with tag filtering."""
         if not df_json:
-            return html.Div("No data available.", className="text-muted")
+            raise PreventUpdate
             
         df = pd.read_json(io.StringIO(df_json), orient='split')
         
         if df.empty:
-            return html.Div("No data available.", className="text-muted")
+            raise PreventUpdate
+        
+        # Apply tag filter
+        if selected_tags:
+            # Convert tags to lowercase for case-insensitive matching
+            selected_tags = [tag.lower().strip() for tag in selected_tags]
+            
+            # Split tags in each row and check if any match
+            def has_selected_tags(tags_str):
+                if not isinstance(tags_str, str):
+                    return False
+                row_tags = [tag.lower().strip() for tag in tags_str.split(',')]
+                return any(tag in row_tags for tag in selected_tags)
+            
+            mask = df['tags'].apply(has_selected_tags)
+            df = df[mask]
+        
+        return df.to_dict('records')
+    
+    @app.callback(
+        Output("download-tagged-data", "data"),
+        [Input("download-tagged-btn", "n_clicks")],
+        [State("data-store", "data")],
+        prevent_initial_call=True
+    )
+    def download_tagged_file(n_clicks, df_json):
+        """Download the tagged BibTeX file."""
+        if not df_json:
+            return None
+            
+        df = pd.read_json(io.StringIO(df_json), orient='split')
+        
+        # Create BibTeX content with tags
+        bibtex_content = """
+@comment{BibTeX file generated by Bibtex Analyzer}
+@comment{Tags have been added to each entry}
+
+"""
+        
+        for _, row in df.iterrows():
+            entry = row['entry'].strip()
+            tags = row['tags']
+            if isinstance(tags, str):
+                tags = [tag.strip() for tag in tags.split(',')]
+            bibtex_content += f"{entry}\n@comment{{Tags: {', '.join(tags)}}}\n\n"
+        
+        return dict(
+            content=bibtex_content,
+            filename="tagged_bibtex.bibtex"
+        )
+
+    @app.callback(
+        [Output('data-table-container', 'children'),
+         Output('tag-filter', 'options')],
+        [Input('tagged-data-store', 'data')],
+        prevent_initial_call=True
+    )
+    def update_table_and_filter(df_json):
+        """Update the data table and populate tag filter options."""
+        if not df_json:
+            return html.Div("No data available.", className="text-muted"), []
+            
+        df = pd.read_json(io.StringIO(df_json), orient='split')
+        
+        if df.empty:
+            return html.Div("No data available.", className="text-muted"), []
         
         # Format the display
         if 'authors' in df.columns:
@@ -1049,8 +1126,18 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 lambda x: ', '.join(x) if isinstance(x, list) else x
             )
         
+        # Get unique tags for filter options
+        all_tags = set()
+        for tags_str in df['tags']:
+            if isinstance(tags_str, str):
+                tags = [tag.strip() for tag in tags_str.split(',')]
+                all_tags.update(tags)
+        
+        tag_options = [{'label': tag, 'value': tag} for tag in sorted(all_tags)]
+        
         # Create the data table
-        return dash_table.DataTable(
+        table = dash_table.DataTable(
+            id='data-table',
             columns=[{"name": i, "id": i} for i in df.columns],
             data=df.to_dict('records'),
             page_size=10,
@@ -1080,6 +1167,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 }
             ]
         )
+        
+        return table, tag_options
     
     @app.callback(
         Output("download-wordcloud", "data"),
@@ -1104,25 +1193,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         
         raise PreventUpdate
     
-    @app.callback(
-        Output("download-tagged-data", "data"),
-        [Input("download-data-button", "n_clicks")],
-        [State('tagged-data-store', 'data')],
-        prevent_initial_call=True,
-    )
-    def download_tagged_data(n_clicks, df_json):
-        """Download the tagged data as CSV."""
-        if n_clicks is None or df_json is None:
-            raise PreventUpdate
-            
-        df = pd.read_json(io.StringIO(df_json), orient='split')
-        
-        return dcc.send_data_frame(
-            df.to_csv,
-            "tagged_papers.csv",
-            index=False,
-            encoding="utf-8-sig"
-        )
+
 
 def run_dashboard(debug: bool = False, port: int = 8050) -> None:
     """Run the dashboard.
