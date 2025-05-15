@@ -653,116 +653,39 @@ def handle_generate_word_cloud(n_clicks: Optional[int], initial_load_ts: Optiona
     Returns:
         Tuple containing figure, HTML data, button disabled state, error message, error visibility, and style
     """
-    # Get the callback context
-    ctx = dash.callback_context
-    
-    # Check if this is the initial load or triggered by initial load
-    if not ctx.triggered:
-        # On initial load, check if we have data
-        if df_json is None:
-            return go.Figure(), None, True, None, False, {'display': 'none'}
-        # If we have data, generate a static word cloud
-        wc_type = 'static'
-        return handle_generate_word_cloud(None, initial_load_ts, df_json, max_words, color_scheme, bg_color, wc_type)
-    
-    # If triggered by initial load or data store update
-    if 'initial-load' in ctx.triggered[0]['prop_id'] or 'tagged-data-store' in ctx.triggered[0]['prop_id']:
-        if df_json is None:
-            return go.Figure(), None, True, None, False, {'display': 'none'}
-        wc_type = 'static'
+    # Handle callback context and defaults
+    result = handle_wordcloud_context(n_clicks, initial_load_ts, df_json, max_words, color_scheme, bg_color, wc_type)
+    if result:
+        return result
     
     # If no data, show upload message
-    elif df_json is None:
+    if df_json is None:
         return go.Figure(), None, True, "Please upload and process a BibTeX file first.", True, {'display': 'none'}
     
     try:
         # Get the data
         df = df_from_json_store(df_json)
+        if df is None:
+            return go.Figure(), None, True, "Error loading data.", True, {'display': 'block'}
         
-        if df is None or 'tags' not in df.columns or df['tags'].isna().all():
-            return go.Figure(), None, True, "No tags found in the data.", True, {'display': 'block'}
+        # Prepare tags and paper mappings for word cloud
+        tag_counts_limited, word_to_papers, error_msg = prepare_tags_for_word_cloud(df, max_words)
         
-        # Get tag frequencies
-        tag_counts = count_tag_frequencies(df)
-        
-        if not tag_counts:
-            return go.Figure(), None, True, "No valid tags found.", True, {'display': 'block'}
-        
-        # Sort tags by frequency and get top N
-        sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
-        
-        # Limit the number of tags to max_words
-        if max_words and max_words < len(sorted_tags):
-            sorted_tags = sorted_tags[:max_words]
-        
-        # Convert to word:count dictionary for word cloud
-        tag_counts_limited = dict(sorted_tags)
-        
-        # Create paper mappings
-        word_to_papers = {}
-        for idx, row in df.iterrows():
-            if pd.notna(row['tags']):
-                paper_tags = [tag.strip() for tag in row['tags'].split(',')]
-                for tag in paper_tags:
-                    if tag in tag_counts_limited:
-                        if tag not in word_to_papers:
-                            word_to_papers[tag] = []
-                        word_to_papers[tag].append({
-                            'title': row.get('title', 'No title'),
-                            'year': row.get('year', 'N/A'),
-                            'authors': row.get('author', 'Unknown').split(' and ')[0],
-                            'url': row.get('url', '#')
-                        })
-        
-        if not word_to_papers:
-            return go.Figure(), None, True, "No papers found for tags.", True, {'display': 'block'}
-        
-        # Create a word cloud using the wordcloud library
-        try:
-            # Create a word cloud with specified parameters
-            wordcloud = WordCloud(
-                width=800,
-                height=600,
-                background_color=bg_color,
-                max_words=max_words or len(tag_counts_limited),
-                colormap=color_scheme,
-                prefer_horizontal=0.9,
-                scale=2,
-                min_font_size=10,
-                max_font_size=120,
-                relative_scaling=0.5,
-                collocations=False,
-                normalize_plurals=False
-            )
+        if error_msg:
+            return go.Figure(), None, True, error_msg, True, {'display': 'block'}
             
-            # Generate word cloud from frequencies
-            wordcloud.generate_from_frequencies(tag_counts_limited)
-            
-            # Create a matplotlib figure
-            fig, ax = plt.subplots(figsize=(12, 8), dpi=100, facecolor=bg_color)
-            ax.imshow(wordcloud, interpolation='bilinear')
-            ax.axis('off')
-            plt.tight_layout(pad=0)
-            
-            # Save to buffer
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', facecolor=bg_color)
-            plt.close()
-            
-            # Encode image
-            buf.seek(0)
-            img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
-            
-            if wc_type == 'static':
-                return generate_static_word_cloud(img_str, bg_color)
-            else:  # Interactive mode
-                return generate_interactive_word_cloud(tag_counts_limited, word_to_papers, bg_color, img_str)
+        # Generate word cloud image
+        img_str = create_wordcloud_image(tag_counts_limited, bg_color, color_scheme)
+        
+        if not img_str:
+            return go.Figure(), None, True, "Error generating word cloud image.", True, {'display': 'block'}
+        
+        # Generate appropriate visualization based on type
+        if wc_type == 'static':
+            return generate_static_word_cloud(img_str, bg_color)
+        else:  # Interactive mode
+            return generate_interactive_word_cloud(tag_counts_limited, word_to_papers, bg_color, img_str)
                 
-        except Exception as e:
-            import traceback
-            print(f"Error generating word cloud: {str(e)}")
-            print(traceback.format_exc())
-            return go.Figure(), None, True, f"Error generating word cloud: {str(e)}", True, {'display': 'block'}
     except Exception as e:
         import traceback
         print(f"Error in word cloud generation: {str(e)}")
@@ -1442,6 +1365,146 @@ def generate_and_assign_tags(df: pd.DataFrame, model: str, tag_sample_size: int,
             dbc.Alert(error_msg, color="danger"),
             update_log(error_msg)
         )
+
+def prepare_tags_for_word_cloud(df: pd.DataFrame, max_words: int) -> Tuple[Optional[Dict[str, int]], Optional[Dict[str, List[Dict]]], Optional[str]]:
+    """Extract and prepare tags for word cloud generation.
+    
+    Args:
+        df: DataFrame containing tag data
+        max_words: Maximum number of words to include
+        
+    Returns:
+        Tuple containing tag frequencies dictionary, word-to-papers mapping, and error message if any
+    """
+    if 'tags' not in df.columns or df['tags'].isna().all():
+        return None, None, "No tags found in the data."
+    
+    # Get tag frequencies
+    tag_counts = count_tag_frequencies(df)
+    
+    if not tag_counts:
+        return None, None, "No valid tags found."
+    
+    # Sort tags by frequency and get top N
+    sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    # Limit the number of tags to max_words
+    if max_words and max_words < len(sorted_tags):
+        sorted_tags = sorted_tags[:max_words]
+    
+    # Convert to word:count dictionary for word cloud
+    tag_counts_limited = dict(sorted_tags)
+    
+    # Create paper mappings
+    word_to_papers = {}
+    for idx, row in df.iterrows():
+        if pd.notna(row['tags']):
+            paper_tags = [tag.strip() for tag in row['tags'].split(',')]
+            for tag in paper_tags:
+                if tag in tag_counts_limited:
+                    if tag not in word_to_papers:
+                        word_to_papers[tag] = []
+                    word_to_papers[tag].append({
+                        'title': row.get('title', 'No title'),
+                        'year': row.get('year', 'N/A'),
+                        'authors': row.get('author', 'Unknown').split(' and ')[0],
+                        'url': row.get('url', '#')
+                    })
+    
+    if not word_to_papers:
+        return None, None, "No papers found for tags."
+    
+    return tag_counts_limited, word_to_papers, None
+
+def create_wordcloud_image(tag_counts_limited: Dict[str, int], bg_color: str, color_scheme: str) -> Optional[str]:
+    """Create a word cloud image from tag counts.
+    
+    Args:
+        tag_counts_limited: Dictionary of tags and their frequencies
+        bg_color: Background color for the word cloud
+        color_scheme: Color scheme for the word cloud
+        
+    Returns:
+        Base64 encoded image string or None if error
+    """
+    try:
+        # Create a word cloud with specified parameters
+        wordcloud = WordCloud(
+            width=800,
+            height=600,
+            background_color=bg_color,
+            max_words=len(tag_counts_limited),
+            colormap=color_scheme,
+            prefer_horizontal=0.9,
+            scale=2,
+            min_font_size=10,
+            max_font_size=120,
+            relative_scaling=0.5,
+            collocations=False,
+            normalize_plurals=False
+        )
+        
+        # Generate word cloud from frequencies
+        wordcloud.generate_from_frequencies(tag_counts_limited)
+        
+        # Create a matplotlib figure
+        fig, ax = plt.subplots(figsize=(12, 8), dpi=100, facecolor=bg_color)
+        ax.imshow(wordcloud, interpolation='bilinear')
+        ax.axis('off')
+        plt.tight_layout(pad=0)
+        
+        # Save to buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', facecolor=bg_color)
+        plt.close()
+        
+        # Encode image
+        buf.seek(0)
+        img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+        
+        return img_str
+    except Exception as e:
+        import traceback
+        print(f"Error generating word cloud image: {str(e)}")
+        print(traceback.format_exc())
+        return None
+
+def handle_wordcloud_context(n_clicks: Optional[int], initial_load_ts: Optional[int], 
+                        df_json: Optional[str], max_words: int, color_scheme: str, 
+                        bg_color: str, wc_type: str) -> Optional[Tuple]:
+    """Handle callback context for word cloud generation.
+    
+    Args:
+        n_clicks: Number of button clicks
+        initial_load_ts: Initial load timestamp
+        df_json: JSON string containing DataFrame
+        max_words: Maximum number of words in cloud
+        color_scheme: Color scheme for word cloud
+        bg_color: Background color
+        wc_type: Type of word cloud (static or interactive)
+        
+    Returns:
+        Tuple containing figure etc. if context is handled, None if normal processing should continue
+    """
+    # Get the callback context
+    ctx = dash.callback_context
+    
+    # Check if this is the initial load or triggered by initial load
+    if not ctx.triggered:
+        # On initial load, check if we have data
+        if df_json is None:
+            return go.Figure(), None, True, None, False, {'display': 'none'}
+        # If we have data, generate a static word cloud
+        wc_type = 'static'
+        return handle_generate_word_cloud(None, initial_load_ts, df_json, max_words, color_scheme, bg_color, wc_type)
+    
+    # If triggered by initial load or data store update
+    if 'initial-load' in ctx.triggered[0]['prop_id'] or 'tagged-data-store' in ctx.triggered[0]['prop_id']:
+        if df_json is None:
+            return go.Figure(), None, True, None, False, {'display': 'none'}
+        wc_type = 'static'
+        
+    return None
 
 def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     """Register all Dash callbacks.
