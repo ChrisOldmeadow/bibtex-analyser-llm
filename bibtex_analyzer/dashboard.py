@@ -12,20 +12,17 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
 from dash import dcc, html, Input, Output, State, callback, dash_table, no_update
 from dash.exceptions import PreventUpdate
-import time
-import numpy as np
-from wordcloud import WordCloud
+from datetime import datetime
 import matplotlib
 # Use the 'Agg' backend to avoid GUI threading issues
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from wordcloud import WordCloud
 
 from .bibtex_processor import process_bibtex_file
 from .tag_generator import TagGenerator
-from .visualization.wordcloud2 import create_interactive_wordcloud
 
 # Initialize the Dash app with Bootstrap theme
 def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
@@ -64,15 +61,6 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dbc.NavbarSimple(
             children=[
                 dbc.NavItem(dbc.NavLink("GitHub", href="https://github.com/yourusername/bibtex-analyzer-gpt")),
-                dbc.DropdownMenu(
-                    children=[
-                        dbc.DropdownMenuItem("Documentation", href="#"),
-                        dbc.DropdownMenuItem("About", href="#"),
-                    ],
-                    nav=True,
-                    in_navbar=True,
-                    label="Help",
-                ),
             ],
             brand="Bibtex Analyzer Dashboard",
             brand_href="#",
@@ -1042,31 +1030,29 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     
     @app.callback(
         Output('data-table-container', 'children'),
-        [Input('tagged-data-store', 'data')]
+        [Input('tagged-data-store', 'data')],
+        prevent_initial_call=True
     )
     def update_data_table(df_json):
         """Update the data table."""
-        if df_json is None:
-            return "No data available."
+        if not df_json:
+            return html.Div("No data available.", className="text-muted")
             
         df = pd.read_json(io.StringIO(df_json), orient='split')
         
         if df.empty:
-            return "No data available."
-        
-        # Limit the number of rows for performance
-        df_display = df.head(100).copy()
+            return html.Div("No data available.", className="text-muted")
         
         # Format the display
-        if 'authors' in df_display.columns:
-            df_display['authors'] = df_display['authors'].apply(
+        if 'authors' in df.columns:
+            df['authors'] = df['authors'].apply(
                 lambda x: ', '.join(x) if isinstance(x, list) else x
             )
         
         # Create the data table
         return dash_table.DataTable(
-            columns=[{"name": i, "id": i} for i in df_display.columns],
-            data=df_display.to_dict('records'),
+            columns=[{"name": i, "id": i} for i in df.columns],
+            data=df.to_dict('records'),
             page_size=10,
             style_table={'overflowX': 'auto'},
             style_cell={
@@ -1074,7 +1060,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 'padding': '10px',
                 'whiteSpace': 'normal',
                 'height': 'auto',
-                'minWidth': '100px', 'width': '150px', 'maxWidth': '300px',
+                'minWidth': '100px',
+                'maxWidth': '300px',
                 'overflow': 'hidden',
                 'textOverflow': 'ellipsis',
             },
