@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
+import random
 
 import dash
 import dash_bootstrap_components as dbc
@@ -16,6 +17,11 @@ from dash import dcc, html, Input, Output, State, callback, dash_table, no_updat
 from dash.exceptions import PreventUpdate
 import time
 import numpy as np
+from wordcloud import WordCloud
+import matplotlib
+# Use the 'Agg' backend to avoid GUI threading issues
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 from .bibtex_processor import process_bibtex_file
 from .tag_generator import TagGenerator
@@ -35,20 +41,22 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
     app = dash.Dash(
         __name__,
         external_stylesheets=[dbc.themes.BOOTSTRAP],
-        suppress_callback_exceptions=True
+        suppress_callback_exceptions=True,
+        title="Bibtex Analyzer Dashboard",
+        update_title=None
     )
-    app.title = "Bibtex Analyzer Dashboard"
     
     # Create upload directory if it doesn't exist
     UPLOAD_DIR = Path("uploads")
     UPLOAD_DIR.mkdir(exist_ok=True)
     
-    # Define the layout
+    # Add initial store for tracking first load
     app.layout = html.Div([
+        dcc.Store(id='initial-load', data=True),
         dcc.Store(id='data-store'),
         dcc.Store(id='tagged-data-store'),
         dcc.Store(id='wordcloud-store'),
-        dcc.Store(id='wordcloud-html-store'),
+        dcc.Store(id='wordcloud-html-store', data=None),
         dcc.Download(id="download-wordcloud"),
         dcc.Download(id="download-tagged-data"),
         
@@ -74,8 +82,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         ),
         
         # Main content
-        dbc.Container(fluid=True, className="mt-4", children=[
-            # File upload and processing section
+        dbc.Container(fluid=True, className="py-4", children=[
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
@@ -235,10 +242,10 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                     dbc.RadioItems(
                                         id="wordcloud-type",
                                         options=[
-                                            {"label": "Static (PNG)", "value": "png"},
-                                            {"label": "Interactive (HTML)", "value": "html"},
+                                            {"label": "Static", "value": "static"},
+                                            {"label": "Interactive", "value": "interactive"},
                                         ],
-                                        value="png",
+                                        value="static",
                                         inline=True,
                                         className="mb-3"
                                     ),
@@ -248,11 +255,12 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                             dbc.Row([
                                 dbc.Col([
                                     dbc.Button(
-                                        "Generate Word Cloud",
+                                        "Update Word Cloud",
                                         id="generate-wc-button",
                                         color="primary",
-                                        className="w-100",
-                                        disabled=True
+                                        className="w-100 mt-2",
+                                        disabled=False,
+                                        n_clicks=0
                                     ),
                                 ], width=12),
                             ]),
@@ -264,7 +272,29 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                 dbc.Col([
                     dbc.Tabs([
                         dbc.Tab(label="Word Cloud", tab_id="wordcloud-tab", children=[
-                            html.Div(id="wordcloud-container", className="text-center mt-3"),
+                            html.Div(className="text-center mt-3", children=[
+                                dcc.Graph(
+                                    id='word-cloud-graph',
+                                    config={'displayModeBar': False},
+                                    style={
+                                        'width': '100%',
+                                        'height': '600px',
+                                        'border': 'none',
+                                        'borderRadius': '5px',
+                                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+                                        'display': 'none'
+                                    }
+                                ),
+                                html.Div(id="selected-word", className="h4 mt-3 mb-2"),
+                                dbc.Alert(
+                                    id="wordcloud-error",
+                                    color="danger",
+                                    is_open=False,
+                                    dismissable=True,
+                                    className="mt-3"
+                                ),
+                                html.Div(id="papers-container", className="mt-3")
+                            ]),
                             dbc.Row(
                                 dbc.Col([
                                     dbc.Button(
@@ -318,7 +348,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
             dbc.Container([
                 html.Div(
                     [
-                        html.Span("© 2023 Bibtex Analyzer ", className="text-muted"),
+                        html.Span(" 2023 Bibtex Analyzer ", className="text-muted"),
                         html.A("GitHub", href="https://github.com/yourusername/bibtex-analyzer-gpt", className="text-muted"),
                     ],
                     className="text-center w-100"
@@ -581,31 +611,50 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             )
     
     @app.callback(
-        [Output('wordcloud-container', 'children'),
-         Output('wordcloud-store', 'data'),
+        [Output('word-cloud-graph', 'figure'),
          Output('wordcloud-html-store', 'data'),
-         Output('generate-wc-button', 'disabled'),
          Output('download-wc-button', 'disabled'),
-         Output('processing-logs', 'children', allow_duplicate=True)],
+         Output('wordcloud-error', 'children'),
+         Output('wordcloud-error', 'is_open'),
+         Output('word-cloud-graph', 'style')],
         [Input('generate-wc-button', 'n_clicks'),
-         Input('data-store', 'data'),
-         Input('max-words-slider', 'value'),
-         Input('color-scheme', 'value'),
-         Input('bg-color', 'value'),
-         Input('wordcloud-type', 'value')],
-        prevent_initial_call=True
+         Input('initial-load', 'modified_timestamp'),
+         Input('tagged-data-store', 'data')],
+        [State('max-words-slider', 'value'),
+         State('color-scheme', 'value'),
+         State('bg-color', 'value'),
+         State('wordcloud-type', 'value')]
     )
-    def generate_word_cloud(n_clicks, df_json, max_words, color_scheme, bg_color, wc_type):
-        """Generate and display the word cloud using Plotly."""
-        if df_json is None:
-            return "Upload and process a BibTeX file first.", None, None, True, True, no_update
-            
+    def generate_word_cloud(n_clicks, initial_load_ts, df_json, max_words, color_scheme, bg_color, wc_type):
+        """Generate and display the word cloud using the wordcloud library."""
+        # Get the callback context
+        ctx = dash.callback_context
+        
+        # Check if this is the initial load or triggered by initial load
+        if not ctx.triggered:
+            # On initial load, check if we have data
+            if df_json is None:
+                return go.Figure(), None, True, None, False, {'display': 'none'}
+            # If we have data, generate a static word cloud
+            wc_type = 'static'
+            return generate_word_cloud(None, initial_load_ts, df_json, max_words, color_scheme, bg_color, wc_type)
+        
+        # If triggered by initial load or data store update
+        if 'initial-load' in ctx.triggered[0]['prop_id'] or 'tagged-data-store' in ctx.triggered[0]['prop_id']:
+            if df_json is None:
+                return go.Figure(), None, True, None, False, {'display': 'none'}
+            wc_type = 'static'
+        
+        # If no data, show upload message
+        elif df_json is None:
+            return go.Figure(), None, True, "Please upload and process a BibTeX file first.", True, {'display': 'none'}
+        
         try:
             # Get the data
             df = pd.read_json(io.StringIO(df_json), orient='split')
             
             if 'tags' not in df.columns or df['tags'].isna().all():
-                return "No tags found in the data.", None, None, False, True, no_update
+                return go.Figure(), None, True, "No tags found in the data.", True, {'display': 'block'}
             
             # Flatten tags and count frequencies
             all_tags = []
@@ -620,153 +669,213 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
             
             if not tag_counts:
-                return "No valid tags found.", None, None, False, True, no_update
+                return go.Figure(), None, True, "No valid tags found.", True, {'display': 'block'}
             
             # Sort tags by frequency and get top N
-            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:max_words]
-            words = [tag for tag, _ in sorted_tags]
-            sizes = [count for _, count in sorted_tags]
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
             
-            # Create a Plotly figure
-            fig = go.Figure()
+            # Limit the number of tags to max_words
+            if max_words and max_words < len(sorted_tags):
+                sorted_tags = sorted_tags[:max_words]
             
-            # Get the color sequence based on the scheme
-            try:
-                color_seq = getattr(px.colors.sequential, color_scheme.upper())
-                if not isinstance(color_seq, list):
-                    color_seq = [color_seq]
-                colors = color_seq * (len(words) // len(color_seq) + 1)  # Repeat colors if needed
-            except (AttributeError, IndexError):
-                colors = px.colors.sequential.Viridis  # Default color sequence
+            # Convert to word:count dictionary for word cloud
+            tag_counts_limited = dict(sorted_tags)
             
-            # Calculate word sizes and positions
-            max_size = max(sizes)
-            word_elements = []
-            
-            # Create a grid for word placement
-            grid_size = 100
-            grid = [[False] * grid_size for _ in range(grid_size)]  # Grid to track occupied spaces
-            
-            # Function to check if a word can be placed at a position
-            def can_place(x, y, width, height):
-                x_start = max(0, int(x - width/2))
-                x_end = min(grid_size-1, int(x + width/2))
-                y_start = max(0, int(y - height/2))
-                y_end = min(grid_size-1, int(y + height/2))
-                
-                for i in range(x_start, x_end + 1):
-                    for j in range(y_start, y_end + 1):
-                        if grid[i][j]:
-                            return False
-                return True
-            
-            # Function to mark grid as occupied
-            def mark_occupied(x, y, width, height):
-                x_start = max(0, int(x - width/2))
-                x_end = min(grid_size-1, int(x + width/2))
-                y_start = max(0, int(y - height/2))
-                y_end = min(grid_size-1, int(y + height/2))
-                
-                for i in range(x_start, x_end + 1):
-                    for j in range(y_start, y_end + 1):
-                        grid[i][j] = True
-            
-            # Place words in a spiral pattern
-            center_x, center_y = grid_size // 2, grid_size // 2
-            angle_step = 0.2
-            radius_step = 2
-            
-            for idx, (word, size) in enumerate(zip(words, sizes)):
-                # Calculate font size based on word frequency
-                font_size = min(10 + (size/max_size) * 40, 60)
-                # Estimate word dimensions (rough approximation)
-                word_width = len(word) * font_size * 0.4  # Approximate width
-                word_height = font_size * 1.2  # Approximate height
-                
-                # Try to find a position for the word
-                placed = False
-                radius = 0
-                angle = 0
-                
-                while not placed and radius < grid_size/2:
-                    # Spiral coordinates
-                    x = center_x + radius * np.cos(angle)
-                    y = center_y + radius * np.sin(angle)
-                    
-                    if 0 <= x < grid_size and 0 <= y < grid_size:
-                        if can_place(x, y, word_width/10, word_height/10):
-                            # Add word to the plot
-                            word_elements.append({
-                                'x': x/grid_size * 1000,  # Scale to plot size
-                                'y': y/grid_size * 1000,
-                                'text': word,
-                                'size': font_size,
-                                'color': colors[idx % len(colors)]
+            # Create paper mappings
+            word_to_papers = {}
+            for idx, row in df.iterrows():
+                if pd.notna(row['tags']):
+                    paper_tags = [tag.strip() for tag in row['tags'].split(',')]
+                    for tag in paper_tags:
+                        if tag in tag_counts_limited:
+                            if tag not in word_to_papers:
+                                word_to_papers[tag] = []
+                            word_to_papers[tag].append({
+                                'title': row.get('title', 'No title'),
+                                'year': row.get('year', 'N/A'),
+                                'authors': row.get('author', 'Unknown').split(' and ')[0],
+                                'url': row.get('url', '#')
                             })
-                            mark_occupied(x, y, word_width/10, word_height/10)
-                            placed = True
-                    
-                    # Move along the spiral
-                    angle += angle_step
-                    if angle >= 2 * np.pi:
-                        angle = 0
-                        radius += radius_step
             
-            # Add words to the plot
-            for word_data in word_elements:
-                fig.add_annotation(
-                    x=word_data['x'],
-                    y=word_data['y'],
-                    text=word_data['text'],
-                    showarrow=False,
-                    font=dict(
-                        size=word_data['size'],
-                        color=word_data['color']
-                    ),
-                    xanchor='center',
-                    yanchor='middle'
+            if not word_to_papers:
+                return go.Figure(), None, True, "No papers found for tags.", True, {'display': 'block'}
+            
+            # Create a word cloud using the wordcloud library
+            try:
+                # Create a word cloud with specified parameters
+                wordcloud = WordCloud(
+                    width=800,
+                    height=600,
+                    background_color=bg_color,
+                    max_words=max_words or len(tag_counts_limited),
+                    colormap=color_scheme,
+                    prefer_horizontal=0.9,
+                    scale=2,
+                    min_font_size=10,
+                    max_font_size=120,
+                    relative_scaling=0.5,
+                    collocations=False,
+                    normalize_plurals=False
                 )
-            
-            # Update layout for word cloud appearance
-            fig.update_layout(
-                plot_bgcolor=bg_color,
-                paper_bgcolor=bg_color,
-                margin=dict(t=20, b=20, l=20, r=20),
-                xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[0, 1000]),
-                yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[0, 1000]),
-                showlegend=False,
-                height=600,
-                width=800,
-            )
-            
-            # Convert figure to HTML
-            html_content = fig.to_html(full_html=False, include_plotlyjs='cdn')
-            
-            # For PNG download, we'll use the HTML content
-            # This is a limitation of the current implementation
-            img_str = base64.b64encode(html_content.encode('utf-8')).decode('utf-8')
-            
-            return (
-                dcc.Graph(
-                    figure=fig,
-                    config={'displayModeBar': False},
-                    style={
+                
+                # Generate word cloud from frequencies
+                wordcloud.generate_from_frequencies(tag_counts_limited)
+                
+                # Create a matplotlib figure
+                fig, ax = plt.subplots(figsize=(12, 8), dpi=100, facecolor=bg_color)
+                ax.imshow(wordcloud, interpolation='bilinear')
+                ax.axis('off')
+                plt.tight_layout(pad=0)
+                
+                # Save to buffer
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', bbox_inches='tight', facecolor=bg_color)
+                plt.close()
+                
+                # Encode image
+                buf.seek(0)
+                img_str = base64.b64encode(buf.getvalue()).decode('utf-8')
+                
+                if wc_type == 'static':
+                    # Create static figure with image
+                    fig = go.Figure()
+                    fig.add_layout_image(
+                        dict(
+                            source=f'data:image/png;base64,{img_str}',
+                            xref='paper',
+                            yref='paper',
+                            x=0,
+                            y=1,
+                            sizex=1,
+                            sizey=1,
+                            sizing='contain',
+                            opacity=1,
+                            layer='above'
+                        )
+                    )
+                    
+                    # Update layout for static mode
+                    fig.update_layout(
+                        plot_bgcolor=bg_color,
+                        paper_bgcolor=bg_color,
+                        margin=dict(t=40, b=20, l=20, r=20),
+                        xaxis=dict(
+                            showgrid=False,
+                            showticklabels=False,
+                            zeroline=False,
+                            range=[0, 1]
+                        ),
+                        yaxis=dict(
+                            showgrid=False,
+                            showticklabels=False,
+                            zeroline=False,
+                            range=[0, 1]
+                        ),
+                        showlegend=False,
+                        height=600,
+                        width=800
+                    )
+                    
+                    return fig, None, False, None, False, {
                         'width': '100%',
                         'height': '600px',
                         'border': 'none',
                         'borderRadius': '5px',
-                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'
+                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+                        'display': 'block'
                     }
-                ),
-                img_str,
-                html_content,
-                False,
-                False,
-                no_update
-            )
-            
+                else:  # Interactive mode
+                    # Store HTML data for click handling
+                    html_data = {
+                        'words': list(tag_counts_limited.keys()),
+                        'frequencies': list(tag_counts_limited.values()),
+                        'papers': word_to_papers,
+                        'img_data': img_str
+                    }
+                    
+                    # Create scatter plot with random positioning and frequency-based sizing
+                    words = list(tag_counts_limited.keys())
+                    x = [random.random() for _ in words]
+                    y = [random.random() for _ in words]
+                    sizes = [min(100, max(10, freq * 2)) for freq in tag_counts_limited.values()]
+                    
+                    # Create hover text with word frequency and related papers
+                    hover_texts = []
+                    for word in words:
+                        papers = word_to_papers.get(word, [])
+                        hover_text = f"<b>{word}</b><br>Frequency: {tag_counts_limited[word]}"
+                        if papers:
+                            hover_text += "<br><br>Related Papers:<br>" + \
+                                "<br>".join([f"{p['year']}: {p['title']}" for p in papers[:3]])
+                        hover_texts.append(hover_text)
+                    
+                    # Create scatter plot with all words
+                    fig = go.Figure()
+                    
+                    # Create a trace for each word with its own size
+                    for word, freq in tag_counts_limited.items():
+                        word_x = x[words.index(word)]
+                        word_y = y[words.index(word)]
+                        
+                        # Calculate font size based on frequency (scaled to be visually appealing)
+                        base_size = 10  # Base size for smallest words
+                        max_size = 50   # Maximum size for most frequent words
+                        font_size = base_size + (max_size - base_size) * (freq / max(tag_counts_limited.values()))
+                        
+                        fig.add_trace(go.Scatter(
+                            x=[word_x],
+                            y=[word_y],
+                            mode='text',
+                            text=[word],
+                            textfont=dict(
+                                size=font_size,
+                                color='rgba(0,0,0,0.7)'
+                            ),
+                            hoverinfo='text',
+                            hovertext=[hover_texts[words.index(word)]]
+                        ))
+                    
+                    # Update layout for interactive mode
+                    fig.update_layout(
+                        plot_bgcolor=bg_color,
+                        paper_bgcolor=bg_color,
+                        margin=dict(t=40, b=20, l=20, r=20),
+                        xaxis=dict(
+                            showgrid=False,
+                            showticklabels=False,
+                            zeroline=False,
+                            range=[0, 1]
+                        ),
+                        yaxis=dict(
+                            showgrid=False,
+                            showticklabels=False,
+                            zeroline=False,
+                            range=[0, 1]
+                        ),
+                        showlegend=False,
+                        height=600,
+                        width=800,
+                        clickmode='event+select'
+                    )
+                    
+                    return fig, None, False, None, False, {
+                        'width': '100%',
+                        'height': '600px',
+                        'border': 'none',
+                        'borderRadius': '5px',
+                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+                        'display': 'block'
+                    }
+            except Exception as e:
+                import traceback
+                print(f"Error generating word cloud: {str(e)}")
+                print(traceback.format_exc())
+                return go.Figure(), None, True, f"Error generating word cloud: {str(e)}", True, {'display': 'block'}
         except Exception as e:
-            return f"Error generating word cloud: {str(e)}", None, None, False, True, no_update
+            import traceback
+            print(f"Error in word cloud generation: {str(e)}")
+            print(traceback.format_exc())
+            return go.Figure(), None, True, f"Error: {str(e)}", True, {'display': 'block'}
     
     @app.callback(
         Output('frequencies-plot', 'figure'),
@@ -779,83 +888,157 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             if df_json is None:
                 return go.Figure()
                 
+            # Load the data
             df = pd.read_json(io.StringIO(df_json), orient='split')
             
-            if 'tags' not in df.columns or df['tags'].isna().all():
-                return go.Figure()
-            
-            # Flatten tags and count frequencies
-            all_tags = []
-            for tags in df['tags'].dropna():
-                if isinstance(tags, str):
-                    all_tags.extend([tag.strip() for tag in tags.split(',')])
-            
+            # Count tag frequencies
             tag_counts = {}
-            for tag in all_tags:
-                tag = tag.strip()
-                if tag and tag.lower() != 'nan':
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+            for tags in df['tags'].dropna():
+                for tag in [t.strip() for t in tags.split(',')]:
+                    if tag in tag_counts:
+                        tag_counts[tag] += 1
+                    else:
+                        tag_counts[tag] = 1
             
-            # Sort by frequency and get top 20
-            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+            # Convert to DataFrame and sort
+            df_tags = pd.DataFrame(tag_counts.items(), columns=['tag', 'count'])
+            df_tags = df_tags.sort_values('count', ascending=False).head(20)
             
-            if not sorted_tags:
-                return go.Figure()
-            
-            # Prepare data for plotting
-            tags = [tag for tag, _ in sorted_tags]
-            counts = [count for _, count in sorted_tags]
-            
-            # Create the bar chart with better error handling for color schemes
-            try:
-                # Try to use the selected color scheme, fallback to default if not available
-                color_sequence = px.colors.sequential.get(color_scheme.capitalize(), 
-                                                         px.colors.sequential.Viridis)
-                
-                # If we got a string (color name), convert it to a list
-                if isinstance(color_sequence, str):
-                    color_sequence = [color_sequence]
-                    
-                fig = px.bar(
-                    x=tags,
-                    y=counts,
-                    labels={'x': 'Tag', 'y': 'Frequency'},
-                    title='Top 20 Most Frequent Tags',
-                    color=tags,
-                    color_discrete_sequence=color_sequence
-                )
-            except Exception as e:
-                # Fallback to default colors if there's any issue with the color scheme
-                fig = px.bar(
-                    x=tags,
-                    y=counts,
-                    labels={'x': 'Tag', 'y': 'Frequency'},
-                    title='Top 20 Most Frequent Tags'
-                )
-            
-            fig.update_layout(
-                xaxis_tickangle=-45,
-                showlegend=False,
-                margin=dict(l=20, r=20, t=40, b=100),
-                height=500,
-                xaxis_title='',
-                yaxis_title='Frequency',
-                hovermode='closest'
+            # Create the bar chart
+            fig = px.bar(
+                df_tags,
+                x='count',
+                y='tag',
+                orientation='h',
+                color='count',
+                color_continuous_scale=color_scheme,
+                labels={'count': 'Number of Papers', 'tag': 'Tag'},
+                title='Most Common Tags'
             )
             
-            # Improve bar appearance
-            fig.update_traces(
-                marker_line_width=1,
-                marker_line_color='white',
-                opacity=0.8
+            # Update layout
+            fig.update_layout(
+                plot_bgcolor='white',
+                yaxis={'categoryorder': 'total ascending'},
+                margin=dict(l=100, r=50, t=50, b=50),
+                height=600
             )
             
             return fig
             
         except Exception as e:
-            # Log the error and return an empty figure
             print(f"Error in update_frequencies_plot: {str(e)}")
             return go.Figure()
+            
+    @app.callback(
+        [Output('papers-container', 'children'),
+         Output('selected-word', 'children')],
+        [Input('word-cloud-graph', 'clickData'),
+         Input('tagged-data-store', 'data')],
+        prevent_initial_call=True
+    )
+    def update_papers_display(clickData, df_json):
+        """Handle word cloud clicks and update the papers display."""
+        ctx = dash.callback_context
+        
+        # Debug information
+        print(f"Callback triggered by: {ctx.triggered}")
+        
+        # If no data, return empty
+        if df_json is None:
+            print("No data available")
+            return [], ""
+        
+        # Check which input triggered the callback
+        if not ctx.triggered:
+            print("No trigger information")
+            return [], ""
+            
+        triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        print(f"Triggered by: {triggered_id}")
+        
+        # If triggered by word cloud click
+        if triggered_id == 'word-cloud-graph' and clickData and clickData.get('points'):
+            try:
+                # Get the clicked word
+                point = clickData['points'][0]
+                word = point.get('customdata')
+                if not word and 'text' in point:
+                    word = point['text']
+                
+                print(f"Clicked on word: {word}")
+                
+                if not word:
+                    print("No word found in click data")
+                    return [], ""
+                    
+                # Load the data
+                df = pd.read_json(io.StringIO(df_json), orient='split')
+                
+                if 'tags' not in df.columns or df['tags'].isna().all():
+                    print("No tags found in data")
+                    return [html.Div("No tags found in the data.", className="text-muted")], ""
+                
+                # Find papers containing the clicked tag
+                papers = []
+                for idx, row in df.iterrows():
+                    if pd.notna(row['tags']):
+                        tags = [t.strip() for t in str(row['tags']).split(',')]
+                        if word in tags:
+                            papers.append({
+                                'title': row.get('title', 'No title'),
+                                'year': row.get('year', 'N/A'),
+                                'authors': row.get('author', 'Unknown').split(' and ')[0],
+                                'journal': row.get('journal', ''),
+                                'url': row.get('url', '#')
+                            })
+                
+                print(f"Found {len(papers)} papers for tag: {word}")
+                
+                # Sort papers by year (newest first)
+                papers.sort(key=lambda x: str(x['year']), reverse=True)
+                
+                if not papers:
+                    print("No papers found for the selected tag")
+                    return [html.Div(f"No papers found with tag: {word}", 
+                                   className="text-muted")], f"Tag: {word}"
+                
+                # Create paper cards
+                paper_cards = []
+                for paper in papers:
+                    card = dbc.Card(
+                        [
+                            dbc.CardHeader(f"{paper['year']}", className="text-muted"),
+                            dbc.CardBody(
+                                [
+                                    html.H5(paper['title'], className="card-title"),
+                                    html.P(f"{paper['authors']}", className="card-text"),
+                                    dbc.Button("View Paper", href=paper['url'], color="primary", 
+                                              external_link=True, target="_blank") 
+                                    if paper['url'] and paper['url'] != '#' else None
+                                ]
+                            )
+                        ],
+                        className="mb-3"
+                    )
+                    paper_cards.append(card)
+                
+                return paper_cards, f"Papers with tag: {word}"
+                
+            except Exception as e:
+                import traceback
+                print(f"Error in update_papers_display: {str(e)}")
+                print(traceback.format_exc())
+                return [html.Div(f"Error: {str(e)}", className="text-danger")], ""
+        
+        # If triggered by data store update, clear the display
+        elif triggered_id == 'tagged-data-store':
+            print("Data store updated, clearing display")
+            return [], ""
+            
+        # Default return
+        print("No matching condition, returning empty")
+        return [], ""
     
     @app.callback(
         Output('data-table-container', 'children'),
