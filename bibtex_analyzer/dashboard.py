@@ -22,8 +22,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 
-from .bibtex_processor import process_bibtex_file
+from .bibtex_processor import process_bibtex_file, BibtexProcessor
 from .tag_generator import TagGenerator
+from .semantic_search import SemanticSearcher, HybridSemanticSearcher
 
 # Initialize the Dash app with Bootstrap theme
 def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
@@ -56,8 +57,10 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dcc.Store(id='tagged-data-store'),
         dcc.Store(id='wordcloud-store'),
         dcc.Store(id='wordcloud-html-store', data=None),
+        dcc.Store(id='search-results-store'),
         dcc.Download(id="download-wordcloud"),
         dcc.Download(id="download-tagged-data"),
+        dcc.Download(id="download-search-results"),
         
         # Navigation bar
         dbc.NavbarSimple(
@@ -74,9 +77,10 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         # Main content
         dbc.Container(fluid=True, className="py-4", children=[
             dbc.Row([
+                # LEFT PANEL: Data Management
                 dbc.Col([
                     dbc.Card([
-                        dbc.CardHeader("1. Upload & Process Bibliography File"),
+                        dbc.CardHeader("📁 Import & Filter Bibliography"),
                         dbc.CardBody([
                             dcc.Upload(
                                 id='upload-bibtex',
@@ -101,7 +105,218 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                             html.Div(id='upload-filename'),
                             html.Div(id='upload-status', className='mt-2'),
                             
-                            # Processing options
+                            # Bibliography Summary
+                            dbc.Card([
+                                dbc.CardHeader("📊 Bibliography Summary"),
+                                dbc.CardBody([
+                                    html.Div(id="bibliography-summary", children="Upload a file to see summary...")
+                                ])
+                            ], className="mt-3", style={"display": "none"}, id="summary-card"),
+                            
+                            # Year filtering options
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Min Year", html_for="min-year"),
+                                    dbc.Input(
+                                        id="min-year",
+                                        type="number",
+                                        placeholder="e.g., 2020",
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText("Filter entries from this year onwards"),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Label("Max Year", html_for="max-year"),
+                                    dbc.Input(
+                                        id="max-year",
+                                        type="number",
+                                        placeholder="e.g., 2023",
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText("Filter entries up to this year"),
+                                ], width=6),
+                            ]),
+                            
+                            html.Hr(),
+                            html.P([
+                                html.Strong("Apply Filters Only:"), " Prepares your data for semantic search by applying year filters. Use this for quick searching without tag generation."
+                            ], className="text-muted small mb-3"),
+                            
+                            dbc.Button(
+                                "📂 Apply Filters Only",
+                                id="filter-button",
+                                color="secondary",
+                                className="w-100 mb-3",
+                                disabled=True
+                            ),
+                            dbc.Progress(id="process-progress", style={"height": "5px"}, className="mt-2"),
+                            html.Div(id="process-progress-text", className="text-center small text-muted mt-1"),
+                            # Log display area
+                            dbc.Card([
+                                dbc.CardHeader("Processing Logs"),
+                                dbc.CardBody([
+                                    dcc.Loading(
+                                        id="loading-logs",
+                                        type="circle",
+                                        children=html.Div(
+                                            id="processing-logs", 
+                                            style={
+                                                "maxHeight": "200px", 
+                                                "overflowY": "auto", 
+                                                "whiteSpace": "pre-wrap",
+                                                "fontFamily": "monospace",
+                                                "fontSize": "0.8rem",
+                                                "backgroundColor": "#f8f9fa",
+                                                "padding": "10px",
+                                                "borderRadius": "5px"
+                                            }
+                                        )
+                                    )
+                                ])
+                            ], className="mt-3"),
+                        ]),
+                    ], className="mb-4"),
+                ], md=6),  # Left column - 50% width
+                
+                # RIGHT PANEL: Analysis & Tag Generation
+                dbc.Col([
+                    # Search Interface
+                    dbc.Card([
+                        dbc.CardHeader("🔍 Interactive Search"),
+                        dbc.CardBody([
+                            # Explanation banner
+                            dbc.Alert([
+                                html.P([
+                                    "Search your bibliography using natural language queries. This feature works ",
+                                    html.Strong("independently of tag generation"), 
+                                    " and searches directly through paper titles, abstracts, and any existing metadata."
+                                ], className="mb-0"),
+                            ], color="info", className="mb-3"),
+                            
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Search Query", html_for="search-query"),
+                                    dbc.Input(
+                                        id="search-query",
+                                        type="text",
+                                        placeholder="e.g., chronic fatigue syndrome, machine learning, climate change",
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText("Enter any topic or research area - semantic search will find related papers even with different terminology"),
+                                ], width=12),
+                            ]),
+                            
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Search Methods", html_for="search-methods"),
+                                    dcc.Checklist(
+                                        id="search-methods",
+                                        options=[
+                                            {"label": "Exact Match (keywords)", "value": "exact"},
+                                            {"label": "Fuzzy Match (typos)", "value": "fuzzy"},
+                                            {"label": "Semantic Match (AI embeddings)", "value": "semantic"},
+                                            {"label": "🚀 Hybrid AI (embeddings + LLM)", "value": "hybrid"},
+                                            {"label": "🤖 LLM Only (premium quality)", "value": "llm_only"}
+                                        ],
+                                        value=["exact", "fuzzy", "semantic"],
+                                        inline=False,
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText([
+                                        html.Strong("Exact:"), " Finds papers containing your exact words. ",
+                                        html.Strong("Fuzzy:"), " Handles typos and variations. ",
+                                        html.Strong("Semantic:"), " Fast AI similarity using embeddings. ",
+                                        html.Strong("Hybrid:"), " Best balance - combines embeddings + LLM analysis. ",
+                                        html.Strong("LLM Only:"), " Premium quality - GPT analyzes ALL papers (expensive but thorough)."
+                                    ]),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Label("AI Model & Thresholds", html_for="hybrid-model"),
+                                    dbc.Select(
+                                        id="hybrid-model",
+                                        options=[
+                                            {"label": "💰 GPT-4o Mini (Recommended)", "value": "gpt-4o-mini"},
+                                            {"label": "⚡ GPT-3.5 Turbo", "value": "gpt-3.5-turbo"},
+                                            {"label": "🚀 GPT-4o", "value": "gpt-4o"},
+                                            {"label": "👑 GPT-4 Turbo (Premium)", "value": "gpt-4-turbo"},
+                                        ],
+                                        value="gpt-4o-mini",
+                                        className="mb-2"
+                                    ),
+                                    dbc.Label("Semantic Threshold", html_for="semantic-threshold"),
+                                    dcc.Slider(
+                                        id="semantic-threshold",
+                                        min=0.1,
+                                        max=1.0,
+                                        value=0.7,
+                                        step=0.05,
+                                        marks={i/10: f"{i/10:.1f}" for i in range(1, 11, 2)},
+                                        tooltip={"placement": "bottom", "always_visible": True},
+                                        className="mb-2"
+                                    ),
+                                    dbc.Label("Fuzzy Threshold", html_for="fuzzy-threshold"),
+                                    dcc.Slider(
+                                        id="fuzzy-threshold",
+                                        min=50,
+                                        max=100,
+                                        value=80,
+                                        step=5,
+                                        marks={i: f"{i}" for i in range(50, 101, 25)},
+                                        tooltip={"placement": "bottom", "always_visible": True},
+                                        className="mb-3"
+                                    ),
+                                ], width=6),
+                            ]),
+                            
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Button(
+                                        "🔍 Search Bibliography",
+                                        id="search-button",
+                                        color="primary",
+                                        className="w-100 mb-3",
+                                        disabled=True
+                                    ),
+                                    dbc.FormText(id="search-button-help", children="Upload a bibliography file first to enable search"),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Label("Max Results", html_for="max-results"),
+                                    dbc.Input(
+                                        id="max-results",
+                                        type="number",
+                                        min=1,
+                                        max=100,
+                                        value=20,
+                                        className="mb-3"
+                                    ),
+                                ], width=3),
+                                dbc.Col([
+                                    dbc.Label("LLM Threshold", html_for="llm-threshold"),
+                                    dbc.Input(
+                                        id="llm-threshold",
+                                        type="number",
+                                        min=0,
+                                        max=10,
+                                        step=0.5,
+                                        value=6.0,
+                                        className="mb-3"
+                                    ),
+                                ], width=3),
+                            ]),
+                        ])
+                    ], className="mb-4"),
+                    
+                    # Tag Generation Interface
+                    dbc.Card([
+                        dbc.CardHeader("🏷️ AI Tag Generation & Word Clouds"),
+                        dbc.CardBody([
+                            dbc.Alert([
+                                html.P([
+                                    html.Strong("Process & Generate Tags:"), " Applies filters AND generates AI tags for word clouds and tag analysis. Takes longer but enables all visualization features."
+                                ], className="mb-0"),
+                            ], color="success", className="mb-3"),
+                            
+                            # Tag Generation Settings
                             dbc.Row([
                                 dbc.Col([
                                     dbc.Label("Tag Sample Size", html_for="tag-sample-size"),
@@ -139,151 +354,148 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                 ], width=4),
                             ]),
                             
-                            # Year filtering options
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Min Year", html_for="min-year"),
-                                    dbc.Input(
-                                        id="min-year",
-                                        type="number",
-                                        placeholder="e.g., 2020",
-                                        className="mb-3"
-                                    ),
-                                    dbc.FormText("Filter entries from this year onwards"),
-                                ], width=6),
-                                dbc.Col([
-                                    dbc.Label("Max Year", html_for="max-year"),
-                                    dbc.Input(
-                                        id="max-year",
-                                        type="number",
-                                        placeholder="e.g., 2023",
-                                        className="mb-3"
-                                    ),
-                                    dbc.FormText("Filter entries up to this year"),
-                                ], width=6),
-                            ]),
-                            
                             dbc.Button(
-                                "Process File",
+                                "🏷️ Process & Generate Tags",
                                 id="process-button",
                                 color="primary",
-                                className="w-100",
+                                className="w-100 mb-3",
                                 disabled=True
                             ),
-                            dbc.Progress(id="process-progress", style={"height": "5px"}, className="mt-2"),
-                            html.Div(id="process-progress-text", className="text-center small text-muted mt-1"),
-                            # Log display area
-                            dbc.Card([
-                                dbc.CardHeader("Processing Logs"),
-                                dbc.CardBody([
-                                    dcc.Loading(
-                                        id="loading-logs",
-                                        type="circle",
-                                        children=html.Div(
-                                            id="processing-logs", 
-                                            style={
-                                                "maxHeight": "200px", 
-                                                "overflowY": "auto", 
-                                                "whiteSpace": "pre-wrap",
-                                                "fontFamily": "monospace",
-                                                "fontSize": "0.8rem",
-                                                "backgroundColor": "#f8f9fa",
-                                                "padding": "10px",
-                                                "borderRadius": "5px"
-                                            }
-                                        )
-                                    )
-                                ])
-                            ], className="mt-3"),
-                        ]),
-                    ], className="mb-4"),
-                    
-                    # Word cloud customization
-                    dbc.Card([
-                        dbc.CardHeader("3. Customize Word Cloud"),
-                        dbc.CardBody([
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Max Words"),
-                                    dcc.Slider(
-                                        id="max-words-slider",
-                                        min=10,
-                                        max=200,
-                                        step=10,
-                                        value=100,
-                                        marks={i: str(i) for i in range(0, 201, 50)},
-                                        className="mb-3"
-                                    ),
-                                ], width=12),
-                            ]),
                             
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Color Scheme"),
-                                    dcc.Dropdown(
-                                        id="color-scheme",
-                                        options=[
-                                            {"label": "Viridis", "value": "viridis"},
-                                            {"label": "Plasma", "value": "plasma"},
-                                            {"label": "Inferno", "value": "inferno"},
-                                            {"label": "Magma", "value": "magma"},
-                                            {"label": "Cividis", "value": "cividis"},
-                                            {"label": "Rainbow", "value": "rainbow"},
-                                        ],
-                                        value="viridis",
-                                        className="mb-3"
-                                    ),
-                                ], width=6),
+                            # Word Cloud Customization (Collapsible)
+                            dbc.Collapse([
+                                html.Hr(),
+                                html.H6("Word Cloud Options", className="mb-3"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("Max Words"),
+                                        dcc.Slider(
+                                            id="max-words-slider",
+                                            min=10,
+                                            max=200,
+                                            step=10,
+                                            value=100,
+                                            marks={i: str(i) for i in range(0, 201, 50)},
+                                            className="mb-3"
+                                        ),
+                                    ], width=12),
+                                ]),
                                 
-                                dbc.Col([
-                                    dbc.Label("Background Color"),
-                                    dcc.Dropdown(
-                                        id="bg-color",
-                                        options=[
-                                            {"label": "White", "value": "white"},
-                                            {"label": "Black", "value": "black"},
-                                            {"label": "Light Gray", "value": "#f8f9fa"},
-                                            {"label": "Dark", "value": "#212529"},
-                                        ],
-                                        value="white",
-                                        className="mb-3"
-                                    ),
-                                ], width=6),
-                            ]),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("Color Scheme"),
+                                        dcc.Dropdown(
+                                            id="color-scheme",
+                                            options=[
+                                                {"label": "Viridis", "value": "viridis"},
+                                                {"label": "Plasma", "value": "plasma"},
+                                                {"label": "Inferno", "value": "inferno"},
+                                                {"label": "Magma", "value": "magma"},
+                                                {"label": "Cividis", "value": "cividis"},
+                                                {"label": "Rainbow", "value": "rainbow"},
+                                            ],
+                                            value="viridis",
+                                            className="mb-3"
+                                        ),
+                                    ], width=6),
+                                    
+                                    dbc.Col([
+                                        dbc.Label("Background Color"),
+                                        dcc.Dropdown(
+                                            id="bg-color",
+                                            options=[
+                                                {"label": "White", "value": "white"},
+                                                {"label": "Black", "value": "black"},
+                                                {"label": "Light Gray", "value": "#f8f9fa"},
+                                                {"label": "Dark", "value": "#212529"},
+                                            ],
+                                            value="white",
+                                            className="mb-3"
+                                        ),
+                                    ], width=6),
+                                ]),
+                                
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("Word Cloud Type"),
+                                        dbc.RadioItems(
+                                            id="wordcloud-type",
+                                            options=[
+                                                {"label": "Static", "value": "static"},
+                                                {"label": "Interactive", "value": "interactive"},
+                                            ],
+                                            value="static",
+                                            inline=True,
+                                            className="mb-3"
+                                        ),
+                                    ], width=12),
+                                ]),
+                                
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Button(
+                                            "Update Word Cloud",
+                                            id="generate-wc-button",
+                                            color="primary",
+                                            className="w-100 mt-2",
+                                            disabled=False,
+                                            n_clicks=0
+                                        ),
+                                    ], width=12),
+                                ]),
+                            ], id="wordcloud-collapse", is_open=False),
                             
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Word Cloud Type"),
-                                    dbc.RadioItems(
-                                        id="wordcloud-type",
-                                        options=[
-                                            {"label": "Static", "value": "static"},
-                                            {"label": "Interactive", "value": "interactive"},
-                                        ],
-                                        value="static",
-                                        inline=True,
-                                        className="mb-3"
-                                    ),
-                                ], width=12),
-                            ]),
-                            
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Button(
-                                        "Update Word Cloud",
-                                        id="generate-wc-button",
-                                        color="primary",
-                                        className="w-100 mt-2",
-                                        disabled=False,
-                                        n_clicks=0
-                                    ),
-                                ], width=12),
-                            ]),
+                            dbc.Button(
+                                "⚙️ Show/Hide Word Cloud Options",
+                                id="wordcloud-toggle",
+                                color="secondary",
+                                size="sm",
+                                className="w-100 mt-2"
+                            ),
                         ]),
                     ], className="mb-4"),
-                ], md=4),
-                
-                # Visualization area
+                ], md=6),  # Right column - 50% width
+            ]),
+            
+            # Search Progress and Results Section (Full Width)
+            dbc.Row([
+                dbc.Col([
+                    # Search Progress Card
+                    dbc.Card([
+                        dbc.CardHeader("Search Progress"),
+                        dbc.CardBody([
+                            dbc.Progress(id="search-progress", style={"height": "8px"}, className="mb-2"),
+                            html.Div(id="search-progress-text", className="text-center small text-muted mb-2"),
+                            dcc.Loading(
+                                id="loading-search-logs",
+                                type="circle",
+                                children=html.Div(
+                                    id="search-logs", 
+                                    style={
+                                        "maxHeight": "200px", 
+                                        "overflowY": "auto", 
+                                        "whiteSpace": "pre-wrap",
+                                        "fontFamily": "monospace",
+                                        "fontSize": "0.75rem",
+                                        "backgroundColor": "#f8f9fa",
+                                        "padding": "10px",
+                                        "borderRadius": "5px"
+                                    }
+                                )
+                            )
+                        ])
+                    ], id="search-progress-card", style={"display": "none"}, className="mb-4"),
+                    
+                    # Search Results Container
+                    html.Div(id="search-results-container", className="mt-3"),
+                    
+                    # Status and Result Display
+                    html.Div(id="search-status"),
+                ], width=12)
+            ]),
+            
+            # Visualization Results Section (Full Width)  
+            dbc.Row([
                 dbc.Col([
                     dbc.Tabs([
                         dbc.Tab(label="Word Cloud", tab_id="wordcloud-tab", children=[
@@ -373,7 +585,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                             ]),
                             html.Div(id="data-table-container", className="mt-3"),
                         ]),
-                    ], id="tabs", active_tab="wordcloud-tab"),
+                    ], id="tabs", active_tab="search-tab"),
                 ], md=8),
             ]),
         ]),
@@ -684,6 +896,17 @@ def create_paper_cards(papers: List[Dict], show_tags: bool = False,
                     tag_badges.append(dbc.Badge(f"+{len(tags)-5} more", color="secondary"))
                 tag_elements = html.Div(tag_badges, className="mt-2")
         
+        # Prepare publication ID if available
+        pub_id = get_field_case_insensitive(pd.Series(paper), 'publication_id')
+        pub_id_info = None
+        if pub_id:
+            pub_id_info = html.P([
+                html.Small([
+                    html.Strong("ID: "), 
+                    pub_id
+                ])
+            ], className="text-muted mb-1")
+        
         # Create card with all elements
         card_elements = [
             dbc.CardHeader([
@@ -692,6 +915,7 @@ def create_paper_cards(papers: List[Dict], show_tags: bool = False,
             ]),
             dbc.CardBody([
                 html.H5(title, className="card-title"),
+                pub_id_info,
                 journal_info,
                 tag_elements,
                 html.Div([
@@ -795,6 +1019,11 @@ def create_paper_info(row: pd.Series, include_abstract: bool = False) -> Dict[st
         'entry_type': row.get('ENTRYTYPE', '') if pd.notna(row.get('ENTRYTYPE')) else ''
     }
     
+    # Add publication_id if available (case-insensitive)
+    pub_id = get_field_case_insensitive(row, 'publication_id')
+    if pub_id:
+        paper_info['publication_id'] = pub_id
+    
     # Add abstract if requested
     if include_abstract and 'abstract' in row and pd.notna(row['abstract']):
         paper_info['abstract'] = row['abstract']
@@ -804,6 +1033,35 @@ def create_paper_info(row: pd.Series, include_abstract: bool = False) -> Dict[st
         paper_info['tags'] = row['tags']
     
     return paper_info
+
+def get_field_case_insensitive(row: pd.Series, field_name: str) -> str:
+    """Get a field value from a row with case-insensitive matching.
+    
+    Args:
+        row: Pandas Series (DataFrame row)
+        field_name: Field name to search for (case insensitive)
+        
+    Returns:
+        Field value if found, empty string otherwise
+    """
+    if not isinstance(row, pd.Series):
+        return ""
+    
+    # Convert to dict for easier searching
+    row_dict = row.to_dict()
+    
+    # First try exact match
+    if field_name in row_dict:
+        value = row_dict[field_name]
+        return str(value) if value is not None and pd.notna(value) else ""
+    
+    # Try case-insensitive match
+    field_lower = field_name.lower()
+    for key, value in row_dict.items():
+        if str(key).lower() == field_lower:
+            return str(value) if value is not None and pd.notna(value) else ""
+    
+    return ""
 
 def find_papers_with_tag(df: pd.DataFrame, tag: str) -> List[Dict]:
     """Find papers containing a specific tag.
@@ -861,10 +1119,11 @@ def handle_upload_status(contents: Optional[str], filename: Optional[str], uploa
         return (
             f"Selected: {filename}",
             False,
+            False,
             dbc.Alert(f"File '{filename}' uploaded successfully!", color="success")
         )
     
-    return "", True, ""
+    return "", True, True, ""
 
 def handle_process_bibtex(n_clicks: Optional[int], filename: Optional[str], 
                          tag_sample_size: int, max_entries_to_tag: int,
@@ -1447,8 +1706,27 @@ def handle_update_table_and_filter(df_json: Optional[str]) -> Tuple[Union[dash_t
     tag_options = [{'label': tag, 'value': tag} for tag in sorted(all_tags)]
     
     # Select only the available columns from our desired set
-    columns_to_show = ['year', 'title', 'authors', 'journal', 'doi']
-    available_columns = [col for col in columns_to_show if col in df.columns]
+    columns_to_show = ['year', 'title', 'authors', 'journal', 'publication_id', 'doi']
+    available_columns = []
+    
+    # Check for columns with case-insensitive matching
+    for desired_col in columns_to_show:
+        # First try exact match
+        if desired_col in df.columns:
+            available_columns.append(desired_col)
+        else:
+            # Try case-insensitive match for publication_id
+            if desired_col.lower() == 'publication_id':
+                for col in df.columns:
+                    if col.lower() == 'publication_id':
+                        # Add the column with its original case but rename it for display
+                        df['publication_id'] = df[col]
+                        available_columns.append('publication_id')
+                        break
+            else:
+                # For other columns, check if they exist exactly
+                if desired_col in df.columns:
+                    available_columns.append(desired_col)
     
     # Format the display for available columns
     if 'authors' in df.columns:
@@ -1890,6 +2168,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     @app.callback(
         [Output('upload-filename', 'children'),
          Output('process-button', 'disabled'),
+         Output('filter-button', 'disabled'),
          Output('upload-status', 'children')],
         [Input('upload-bibtex', 'contents')],
         [State('upload-bibtex', 'filename')]
@@ -2207,6 +2486,718 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         """Download the word cloud."""
         return handle_download_word_cloud(n_clicks, img_data, html_data, wc_type)
     
+    # Bibliography summary callback
+    @app.callback(
+        [Output('bibliography-summary', 'children'),
+         Output('summary-card', 'style')],
+        [Input('upload-bibtex', 'contents')],
+        [State('upload-bibtex', 'filename')],
+        prevent_initial_call=True
+    )
+    def update_bibliography_summary(contents, filename):
+        """Generate and display bibliography summary after file upload."""
+        if not contents or not filename:
+            return "Upload a file to see summary...", {"display": "none"}
+        
+        try:
+            # Process the uploaded file to get basic info
+            file_path = upload_dir / filename
+            
+            if not file_path.exists():
+                return "File not found", {"display": "none"}
+            
+            # Process the file
+            entries = process_bibtex_file(file_path)
+            df = pd.DataFrame(entries)
+            
+            # Calculate statistics
+            total_entries = len(df)
+            
+            # Count entries with MEANINGFUL content (not just non-null)
+            has_title = 0
+            has_abstract = 0
+            has_author = 0
+            has_year = 0
+            has_journal = 0
+            has_doi = 0
+            
+            if 'title' in df.columns:
+                has_title = df['title'].notna().sum()
+                # Filter out empty or very short titles
+                meaningful_titles = df['title'].dropna().str.strip().str.len() > 10
+                has_title = meaningful_titles.sum()
+            
+            if 'abstract' in df.columns:
+                # Filter out empty, very short, or placeholder abstracts
+                meaningful_abstracts = (
+                    df['abstract'].notna() & 
+                    (df['abstract'].str.strip() != '') &
+                    (df['abstract'].str.len() > 50) &  # At least 50 characters
+                    (~df['abstract'].str.lower().str.contains('no abstract|abstract not available|n/a', na=False))
+                )
+                has_abstract = meaningful_abstracts.sum()
+            
+            if 'author' in df.columns:
+                meaningful_authors = (
+                    df['author'].notna() & 
+                    (df['author'].str.strip() != '') &
+                    (df['author'].str.len() > 2)
+                )
+                has_author = meaningful_authors.sum()
+            
+            if 'year' in df.columns:
+                # Only count valid 4-digit years between 1000-2100
+                years_numeric = pd.to_numeric(df['year'], errors='coerce')
+                valid_years = (years_numeric >= 1000) & (years_numeric <= 2100)
+                has_year = valid_years.sum()
+            
+            if 'journal' in df.columns:
+                meaningful_journals = (
+                    df['journal'].notna() & 
+                    (df['journal'].str.strip() != '') &
+                    (df['journal'].str.len() > 2)
+                )
+                has_journal = meaningful_journals.sum()
+            
+            if 'doi' in df.columns:
+                # DOI should look like a DOI (contain at least one dot and slash)
+                meaningful_dois = (
+                    df['doi'].notna() & 
+                    (df['doi'].str.strip() != '') &
+                    df['doi'].str.contains(r'10\.', na=False)  # DOIs start with "10."
+                )
+                has_doi = meaningful_dois.sum()
+            
+            # Year range (only from valid years)
+            year_range = "N/A"
+            if 'year' in df.columns and has_year > 0:
+                years = pd.to_numeric(df['year'], errors='coerce')
+                valid_years = years[(years >= 1000) & (years <= 2100)].dropna()
+                if len(valid_years) > 0:
+                    min_year = int(valid_years.min())
+                    max_year = int(valid_years.max())
+                    year_range = f"{min_year} - {max_year}"
+            
+            # Create summary display
+            summary_content = [
+                dbc.Row([
+                    dbc.Col([
+                        html.H6("📄 Total Entries", className="text-primary mb-1"),
+                        html.H4(f"{total_entries:,}", className="mb-0")
+                    ], width=4),
+                    dbc.Col([
+                        html.H6("📅 Year Range", className="text-primary mb-1"),
+                        html.H4(year_range, className="mb-0")
+                    ], width=4),
+                    dbc.Col([
+                        html.H6("📝 With Abstracts", className="text-primary mb-1"),
+                        html.H4(f"{has_abstract:,} ({has_abstract/total_entries*100:.1f}%)", className="mb-0")
+                    ], width=4),
+                ], className="mb-3"),
+                
+                html.Hr(),
+                
+                html.H6("Field Completeness:", className="mb-2"),
+                dbc.Progress([
+                    dbc.Progress(value=has_title/total_entries*100, label=f"Titles: {has_title:,}", bar=True, color="success"),
+                ], className="mb-2"),
+                dbc.Progress([
+                    dbc.Progress(value=has_author/total_entries*100, label=f"Authors: {has_author:,}", bar=True, color="info"),
+                ], className="mb-2"),
+                dbc.Progress([
+                    dbc.Progress(value=has_year/total_entries*100, label=f"Years: {has_year:,}", bar=True, color="warning"),
+                ], className="mb-2"),
+                dbc.Progress([
+                    dbc.Progress(value=has_journal/total_entries*100, label=f"Journals: {has_journal:,}", bar=True, color="primary"),
+                ], className="mb-2"),
+                dbc.Progress([
+                    dbc.Progress(value=has_doi/total_entries*100, label=f"DOIs: {has_doi:,}", bar=True, color="secondary"),
+                ], className="mb-0"),
+                
+                html.Hr(),
+                
+                # Add data quality insights
+                html.H6("🔍 Search Readiness:", className="mb-2"),
+                html.Div([
+                    dbc.Badge(f"{has_abstract:,} papers ready for semantic search", 
+                             color="success" if has_abstract > total_entries * 0.5 else "warning", 
+                             className="me-2 mb-1"),
+                    dbc.Badge(f"{has_year:,} with valid years for filtering", 
+                             color="info", className="me-2 mb-1"),
+                    dbc.Badge(f"{total_entries - has_abstract:,} missing meaningful abstracts", 
+                             color="secondary", className="me-2 mb-1"),
+                ]),
+                
+                html.Hr(),
+                html.Small([
+                    html.Strong("💡 Quality Check: "), 
+                    f"Only papers with meaningful abstracts (50+ chars) can be effectively searched. " +
+                    f"You have {has_abstract:,} papers ({has_abstract/total_entries*100:.1f}%) ready for semantic search. " +
+                    (f"Consider using Publication Enricher to add missing abstracts." if has_abstract < total_entries * 0.8 else "Great abstract coverage!")
+                ], className="text-muted")
+            ]
+            
+            return summary_content, {"display": "block"}
+            
+        except Exception as e:
+            error_content = [
+                dbc.Alert(f"Error analyzing file: {str(e)}", color="warning", className="mb-0")
+            ]
+            return error_content, {"display": "block"}
+    
+    # Filter-only callback for applying filters without tag generation
+    @app.callback(
+        [Output('data-store', 'data', allow_duplicate=True),
+         Output('upload-status', 'children', allow_duplicate=True),
+         Output('processing-logs', 'children', allow_duplicate=True)],
+        [Input('filter-button', 'n_clicks')],
+        [State('upload-bibtex', 'filename'),
+         State('min-year', 'value'),
+         State('max-year', 'value')],
+        prevent_initial_call=True
+    )
+    def apply_filters_only(n_clicks, filename, min_year, max_year):
+        """Apply filters to the uploaded file without generating tags."""
+        if n_clicks is None or not filename:
+            raise PreventUpdate
+            
+        file_path = upload_dir / filename
+        logger = create_logger()
+        
+        logs = logger.log_info(f"Starting to filter {filename}")
+        
+        if not file_path.exists():
+            error_msg = "Error: File not found"
+            logs = logger.log_error(error_msg)
+            return (
+                no_update,
+                dbc.Alert(error_msg, color="danger"),
+                logs
+            )
+        
+        try:
+            # Process the file
+            logs = logger.log_info(f"Reading {filename}...")
+            entries = process_bibtex_file(file_path)
+            logs = logger.log_info(f"Found {len(entries)} entries in the file")
+            
+            # Apply year filtering if specified
+            if min_year or max_year:
+                processor = BibtexProcessor()
+                processor.entries = entries
+                
+                filters = {}
+                if min_year:
+                    filters['min_year'] = min_year
+                    logs = logger.log_info(f"Filtering entries from year {min_year} onwards")
+                if max_year:
+                    filters['max_year'] = max_year
+                    logs = logger.log_info(f"Filtering entries up to year {max_year}")
+                
+                original_count = len(entries)
+                entries = processor.filter_entries(**filters)
+                filtered_count = len(entries)
+                
+                if filtered_count < original_count:
+                    logs = logger.log_info(f"Year filtering: {original_count} entries -> {filtered_count} entries")
+                else:
+                    logs = logger.log_info("No entries were filtered out")
+            
+            if not entries:
+                error_msg = "Error: No entries found after filtering"
+                logs = logger.log_error(error_msg)
+                return (
+                    no_update,
+                    dbc.Alert(error_msg, color="danger"),
+                    logs
+                )
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(entries)
+            
+            # Count entries with meaningful abstracts for search
+            abstract_count = 0
+            searchable_count = 0
+            if 'abstract' in df.columns:
+                abstract_count = df['abstract'].notna().sum()
+                # Count meaningful abstracts (same criteria as summary)
+                meaningful_abstracts = (
+                    df['abstract'].notna() & 
+                    (df['abstract'].str.strip() != '') &
+                    (df['abstract'].str.len() > 50) &
+                    (~df['abstract'].str.lower().str.contains('no abstract|abstract not available|n/a', na=False))
+                )
+                searchable_count = meaningful_abstracts.sum()
+                logs = logger.log_info(f"{abstract_count} entries have abstracts, {searchable_count} are searchable (50+ chars)")
+            
+            # Save the filtered data without tags
+            df_json = df.to_json(orient='split', date_format='iso')
+            
+            success_msg = f"Successfully filtered {len(df)} entries ({searchable_count} with searchable abstracts). Ready for search!"
+            logs = logger.log_success(success_msg)
+            
+            return (
+                df_json,
+                dbc.Alert(success_msg, color="success"),
+                logs
+            )
+            
+        except Exception as e:
+            error_msg = f"Error during filtering: {str(e)}"
+            logs = logger.log_error(error_msg, e)
+            return (
+                no_update,
+                dbc.Alert(error_msg, color="danger"),
+                logs
+            )
+    
+    # Search functionality callbacks
+    @app.callback(
+        [Output('search-button', 'disabled'),
+         Output('search-button-help', 'children')],
+        [Input('search-query', 'value'),
+         Input('data-store', 'data'),
+         Input('upload-bibtex', 'contents'),
+         Input('upload-bibtex', 'filename')]
+    )
+    def update_search_button(query, data, upload_contents, filename):
+        """Enable search button when query is entered and data is available."""
+        # Check if we have uploaded content or processed data
+        has_data = bool(data) or bool(upload_contents) or bool(filename)
+        
+        if not has_data:
+            return True, "Upload a bibliography file first to enable search"
+        elif not query or not query.strip():
+            return True, "Enter a search query (e.g., 'chronic fatigue syndrome')"
+        else:
+            # If we have a query and some form of data, enable the button
+            return False, "Ready to search your uploaded bibliography"
+    
+    @app.callback(
+        [Output('search-results-container', 'children'),
+         Output('search-status', 'children'),
+         Output('search-progress', 'value'),
+         Output('search-progress-text', 'children'),
+         Output('search-logs', 'children'),
+         Output('search-progress-card', 'style'),
+         Output('search-results-store', 'data')],
+        [Input('search-button', 'n_clicks')],
+        [State('search-query', 'value'),
+         State('search-methods', 'value'),
+         State('semantic-threshold', 'value'),
+         State('fuzzy-threshold', 'value'),
+         State('max-results', 'value'),
+         State('hybrid-model', 'value'),
+         State('llm-threshold', 'value'),
+         State('data-store', 'data'),
+         State('upload-bibtex', 'filename')],
+        prevent_initial_call=True
+    )
+    def perform_search(n_clicks, query, methods, semantic_threshold, fuzzy_threshold, max_results, hybrid_model, llm_threshold, data, filename):
+        """Perform semantic search on the loaded data with detailed logging."""
+        if not n_clicks or not query:
+            return "", "", 0, "", "Ready to search...", {"display": "none"}, None
+        
+        # Initialize logger and progress
+        logger = create_logger()
+        progress = 0
+        
+        # Show progress card
+        progress_style = {"display": "block"}
+        
+        try:
+            logs = logger.log_info(f"Starting search for: '{query}'")
+            
+            # Get data - either from store or by processing file directly
+            if data:
+                df = pd.read_json(data, orient='split')
+                logs = logger.log_info(f"Loaded {len(df)} papers from data store")
+            elif filename:
+                # Fallback: process file directly if no filtered data available
+                logs = logger.log_info(f"No processed data found, loading from file: {filename}")
+                file_path = upload_dir / filename
+                entries = process_bibtex_file(file_path)
+                df = pd.DataFrame(entries)
+                logs = logger.log_info(f"Loaded {len(df)} papers from file")
+            else:
+                error_msg = "No data available for search"
+                logs = logger.log_error(error_msg)
+                return (
+                    dbc.Alert(error_msg, color="danger"),
+                    "",
+                    0,
+                    "Error",
+                    logs,
+                    progress_style,
+                    None
+                )
+            
+            # Update progress
+            progress = 10
+            
+            # Initialize searcher based on methods
+            try:
+                if 'hybrid' in methods or 'llm_only' in methods:
+                    searcher = HybridSemanticSearcher(llm_model=hybrid_model)
+                    if 'llm_only' in methods:
+                        logs = logger.log_info(f"Initialized LLM-only searcher ({hybrid_model})")
+                    else:
+                        logs = logger.log_info(f"Initialized hybrid searcher (embeddings + {hybrid_model})")
+                else:
+                    # Get API key from environment
+                    api_key = os.getenv('OPENAI_API_KEY')
+                    if not api_key and 'semantic' in methods:
+                        error_msg = "OpenAI API key required for semantic search. Please set OPENAI_API_KEY in your .env file."
+                        logs = logger.log_error(error_msg)
+                        return (
+                            dbc.Alert(error_msg, color="danger"),
+                            "",
+                            0,
+                            "Error",
+                            logs,
+                            progress_style,
+                            None
+                        )
+                    searcher = SemanticSearcher(api_key=api_key) if api_key else SemanticSearcher()
+                    logs = logger.log_info("Initialized standard semantic searcher")
+            except Exception as e:
+                error_msg = f"Failed to initialize searcher: {str(e)}"
+                logs = logger.log_error(error_msg)
+                return (
+                    dbc.Alert(error_msg, color="danger"),
+                    "",
+                    0,
+                    "Error",
+                    logs,
+                    progress_style,
+                    None
+                )
+            
+            # Update progress
+            progress = 20
+            
+            # Perform search with logging
+            logs = logger.log_info(f"Search methods: {', '.join(methods)}")
+            logs = logger.log_info(f"Thresholds - Semantic: {semantic_threshold:.2f}, Fuzzy: {fuzzy_threshold}%")
+            
+            # Handle special search methods
+            if 'llm_only' in methods:
+                # LLM-only search - analyze ALL papers with GPT
+                llm_results = searcher.llm_only_search(
+                    query=query,
+                    df=df,
+                    max_results=max_results,
+                    relevance_threshold=llm_threshold,
+                    logger=logger
+                )
+                
+                # Convert LLM results to DataFrame format
+                if llm_results:
+                    results_data = []
+                    for idx, score in llm_results:
+                        paper_data = df.iloc[idx].to_dict()
+                        paper_data['search_score'] = score
+                        paper_data['exact_score'] = 0
+                        paper_data['fuzzy_score'] = 0
+                        paper_data['semantic_score'] = 0
+                        paper_data['llm_only_score'] = score
+                        paper_data['original_index'] = idx
+                        
+                        # Add LLM analysis data if available
+                        analyzed_papers = getattr(searcher, '_last_analyzed_papers', [])
+                        llm_paper = next((p for p in analyzed_papers if p.get('original_index') == idx), None)
+                        if llm_paper:
+                            paper_data['llm_relevance_score'] = llm_paper.get('llm_relevance_score', 0)
+                            paper_data['llm_confidence'] = llm_paper.get('llm_confidence', 0)
+                            paper_data['llm_reasoning'] = llm_paper.get('llm_reasoning', '')
+                            paper_data['llm_key_concepts'] = llm_paper.get('llm_key_concepts', [])
+                        
+                        results_data.append(paper_data)
+                    
+                    results = pd.DataFrame(results_data)
+                else:
+                    results = pd.DataFrame()
+            elif 'hybrid' in methods:
+                # Hybrid search - use specialized hybrid method
+                hybrid_results = searcher.hybrid_search(
+                    query=query,
+                    df=df,
+                    threshold=semantic_threshold,
+                    max_embedding_candidates=50,
+                    max_results=max_results,
+                    logger=logger
+                )
+                
+                # Get the LLM analyzed papers from the hybrid searcher
+                analyzed_papers = getattr(searcher, '_last_analyzed_papers', [])
+                
+                # Convert hybrid results to DataFrame format with LLM analysis
+                if hybrid_results:
+                    results_data = []
+                    for idx, score in hybrid_results:
+                        paper_data = df.iloc[idx].to_dict()
+                        paper_data['search_score'] = score
+                        paper_data['exact_score'] = 0
+                        paper_data['fuzzy_score'] = 0
+                        paper_data['semantic_score'] = 0
+                        paper_data['hybrid_score'] = score
+                        paper_data['original_index'] = idx
+                        
+                        # Add LLM analysis data if available
+                        llm_paper = next((p for p in analyzed_papers if p.get('original_index') == idx), None)
+                        if llm_paper:
+                            paper_data['llm_relevance_score'] = llm_paper.get('llm_relevance_score', 0)
+                            paper_data['llm_confidence'] = llm_paper.get('llm_confidence', 0)
+                            paper_data['llm_reasoning'] = llm_paper.get('llm_reasoning', '')
+                            paper_data['llm_key_concepts'] = llm_paper.get('llm_key_concepts', [])
+                        
+                        results_data.append(paper_data)
+                    
+                    results = pd.DataFrame(results_data)
+                else:
+                    results = pd.DataFrame()
+            else:
+                # Standard multi-search
+                results = searcher.multi_search(
+                    query=query,
+                    df=df,
+                    methods=methods,
+                    semantic_threshold=semantic_threshold,
+                    fuzzy_threshold=fuzzy_threshold,
+                    max_results=max_results,
+                    logger=logger
+                )
+            
+            # Update progress
+            progress = 90
+            
+            if results.empty:
+                logs = logger.log_info("No results found with current settings")
+                return (
+                    dbc.Alert(
+                        f"No results found for '{query}' with the current settings. Try lowering the thresholds or using different search methods.",
+                        color="warning"
+                    ),
+                    "",
+                    100,
+                    "Search complete - No results",
+                    logs,
+                    progress_style,
+                    None
+                )
+            
+            logs = logger.log_info(f"Formatting {len(results)} results for display...")
+            
+            # Create results display
+            results_cards = []
+            for idx, row in results.iterrows():
+                # Create score badges
+                score_badges = []
+                if row.get('llm_only_score', 0) > 0:
+                    # LLM-only search - show detailed LLM analysis
+                    llm_score = row.get('llm_relevance_score', row['llm_only_score'] * 10)
+                    confidence = row.get('llm_confidence', 8)
+                    score_badges.append(dbc.Badge(f"🤖 LLM: {llm_score:.1f}/10 (confidence: {confidence:.1f})", color="dark", className="me-2"))
+                    
+                    # Add LLM reasoning
+                    if 'llm_reasoning' in row and row['llm_reasoning']:
+                        reasoning_badge = dbc.Badge(
+                            f"💡 {row['llm_reasoning'][:60]}...", 
+                            color="light", 
+                            text_color="dark",
+                            className="me-2 mb-1"
+                        )
+                        score_badges.append(reasoning_badge)
+                    
+                    # Add key concepts if available
+                    if 'llm_key_concepts' in row and row['llm_key_concepts']:
+                        concepts = row['llm_key_concepts'][:3]  # Show first 3 concepts
+                        for concept in concepts:
+                            score_badges.append(dbc.Badge(concept, color="secondary", className="me-1"))
+                elif row.get('hybrid_score', 0) > 0:
+                    # Hybrid search - show LLM analysis if available
+                    score_badges.append(dbc.Badge(f"🚀 Hybrid: {row['hybrid_score']:.3f}", color="warning", className="me-2"))
+                    
+                    # Add LLM reasoning if available (from hybrid search)
+                    if 'llm_reasoning' in row and row['llm_reasoning']:
+                        reasoning_badge = dbc.Badge(
+                            f"💡 {row['llm_reasoning'][:50]}...", 
+                            color="light", 
+                            text_color="dark",
+                            className="me-2 mb-1"
+                        )
+                        score_badges.append(reasoning_badge)
+                else:
+                    # Standard search badges
+                    if row.get('exact_score', 0) > 0:
+                        score_badges.append(dbc.Badge(f"Exact: {row['exact_score']:.2f}", color="success", className="me-2"))
+                    if row.get('fuzzy_score', 0) > 0:
+                        score_badges.append(dbc.Badge(f"Fuzzy: {row['fuzzy_score']:.2f}", color="info", className="me-2"))
+                    if row.get('semantic_score', 0) > 0:
+                        score_badges.append(dbc.Badge(f"Semantic: {row['semantic_score']:.2f}", color="primary", className="me-2"))
+                
+                # Create paper card
+                card = dbc.Card([
+                    dbc.CardHeader([
+                        html.H5(row.get('title', 'No title'), className="mb-1"),
+                        html.Small(f"Overall Score: {row['search_score']:.3f}", className="text-muted")
+                    ]),
+                    dbc.CardBody([
+                        html.P([
+                            html.Strong("Authors: "), 
+                            row.get('author', 'No author')
+                        ], className="mb-2"),
+                        html.P([
+                            html.Strong("Year: "), 
+                            str(row.get('year', 'No year'))
+                        ], className="mb-2"),
+                        html.P([
+                            html.Strong("Publication ID: "), 
+                            get_field_case_insensitive(row, 'publication_id') or 'No ID'
+                        ], className="mb-2") if get_field_case_insensitive(row, 'publication_id') else None,
+                        html.P([
+                            html.Strong("Journal: "), 
+                            row.get('journal', 'No journal')
+                        ], className="mb-2") if row.get('journal') else None,
+                        html.P([
+                            html.Strong("Abstract: "), 
+                            (row.get('abstract', '')[:300] + '...' if len(str(row.get('abstract', ''))) > 300 else row.get('abstract', 'No abstract'))
+                        ], className="mb-2"),
+                        html.Div(score_badges) if score_badges else None
+                    ])
+                ], className="mb-3")
+                
+                results_cards.append(card)
+            
+            # Complete progress
+            progress = 100
+            logs = logger.log_success(f"Search display ready! Showing {len(results)} results")
+            
+            # Store search results for download
+            search_results_data = results.to_json(orient='split')
+            
+            return (
+                html.Div([
+                    dbc.Alert(
+                        f"Found {len(results)} results for '{query}'",
+                        color="success",
+                        className="mb-3"
+                    ),
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Button(
+                                "📄 Download CSV",
+                                id="download-search-csv-button",
+                                color="primary",
+                                size="sm",
+                                className="mb-3"
+                            )
+                        ], width="auto")
+                    ]),
+                    html.Div(results_cards)
+                ]),
+                "",
+                progress,
+                "Search complete!",
+                logs,
+                progress_style,
+                search_results_data
+            )
+            
+        except Exception as e:
+            error_msg = f"Search failed: {str(e)}"
+            if 'logger' in locals():
+                logs = logger.log_error(error_msg, e)
+            else:
+                logs = f"[ERROR] {error_msg}"
+            
+            return (
+                dbc.Alert(error_msg, color="danger"),
+                "",
+                0,
+                "Error occurred",
+                logs,
+                progress_style,
+                None
+            )
+
+    @app.callback(
+        Output('download-search-results', 'data'),
+        [Input('download-search-csv-button', 'n_clicks')],
+        [State('search-results-store', 'data'),
+         State('search-query', 'value')],
+        prevent_initial_call=True
+    )
+    def download_search_results_csv(n_clicks, search_results_data, query):
+        """Download search results as CSV file."""
+        if not n_clicks or not search_results_data:
+            raise PreventUpdate
+        
+        try:
+            # Load search results from store
+            results_df = pd.read_json(search_results_data, orient='split')
+            
+            if results_df.empty:
+                raise PreventUpdate
+            
+            # Select key columns for CSV export
+            export_columns = []
+            
+            # Define desired columns in order
+            desired_columns = [
+                'publication_id', 'title', 'year', 'author', 'journal', 
+                'doi', 'abstract', 'search_score', 'tags'
+            ]
+            
+            # Add columns that exist in the dataframe
+            for col in desired_columns:
+                if col in results_df.columns:
+                    export_columns.append(col)
+                elif col == 'publication_id':
+                    # Try case-insensitive match for publication_id
+                    for df_col in results_df.columns:
+                        if df_col.lower() == 'publication_id':
+                            results_df['publication_id'] = results_df[df_col]
+                            export_columns.append('publication_id')
+                            break
+            
+            # Add any LLM analysis columns if they exist
+            llm_columns = [
+                'llm_relevance_score', 'llm_confidence', 'llm_reasoning', 'llm_key_concepts',
+                'exact_score', 'fuzzy_score', 'semantic_score', 'hybrid_score', 'llm_only_score'
+            ]
+            
+            for col in llm_columns:
+                if col in results_df.columns and col not in export_columns:
+                    export_columns.append(col)
+            
+            # Select only the export columns
+            export_df = results_df[export_columns]
+            
+            # Clean query for filename
+            clean_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+            clean_query = clean_query.replace(' ', '_')[:30]  # Limit filename length
+            
+            filename = f"search_results_{clean_query}_{len(export_df)}papers.csv"
+            
+            return dcc.send_data_frame(export_df.to_csv, filename=filename, index=False)
+            
+        except Exception as e:
+            # If there's an error, we can't show it in the download callback
+            # So we'll just prevent the update
+            raise PreventUpdate
+
+    @app.callback(
+        Output('wordcloud-collapse', 'is_open'),
+        [Input('wordcloud-toggle', 'n_clicks')],
+        [State('wordcloud-collapse', 'is_open')],
+        prevent_initial_call=True
+    )
+    def toggle_wordcloud_options(n_clicks, is_open):
+        """Toggle word cloud options visibility."""
+        if n_clicks:
+            return not is_open
+        return is_open
 
 
 def run_dashboard(debug: bool = False, port: int = 8050) -> None:
