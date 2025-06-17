@@ -180,280 +180,373 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                 
                 # RIGHT PANEL: Analysis & Tag Generation
                 dbc.Col([
-                    # Search Interface
-                    dbc.Card([
-                        dbc.CardHeader("🔍 Interactive Search"),
-                        dbc.CardBody([
-                            # Explanation banner
-                            dbc.Alert([
-                                html.P([
-                                    "Search your bibliography using natural language queries. This feature works ",
-                                    html.Strong("independently of tag generation"), 
-                                    " and searches directly through paper titles, abstracts, and any existing metadata."
-                                ], className="mb-0"),
-                            ], color="info", className="mb-3"),
-                            
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Search Query", html_for="search-query"),
-                                    dbc.Input(
-                                        id="search-query",
-                                        type="text",
-                                        placeholder="e.g., chronic fatigue syndrome, machine learning, climate change",
-                                        className="mb-3"
-                                    ),
-                                    dbc.FormText("Enter any topic or research area - semantic search will find related papers even with different terminology"),
-                                ], width=12),
-                            ]),
-                            
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Search Methods", html_for="search-methods"),
-                                    dcc.Checklist(
-                                        id="search-methods",
-                                        options=[
-                                            {"label": "Exact Match (keywords)", "value": "exact"},
-                                            {"label": "Fuzzy Match (typos)", "value": "fuzzy"},
-                                            {"label": "Semantic Match (AI embeddings)", "value": "semantic"},
-                                            {"label": "🚀 Hybrid AI (embeddings + LLM)", "value": "hybrid"},
-                                            {"label": "🤖 LLM Only (premium quality)", "value": "llm_only"}
-                                        ],
-                                        value=["exact", "fuzzy", "semantic"],
-                                        inline=False,
-                                        className="mb-3"
-                                    ),
-                                    dbc.FormText([
-                                        html.Strong("Exact:"), " Finds papers containing your exact words. ",
-                                        html.Strong("Fuzzy:"), " Handles typos and variations. ",
-                                        html.Strong("Semantic:"), " Fast AI similarity using embeddings. ",
-                                        html.Strong("Hybrid:"), " Best balance - combines embeddings + LLM analysis. ",
-                                        html.Strong("LLM Only:"), " Premium quality - GPT analyzes ALL papers (expensive but thorough)."
-                                    ]),
-                                ], width=6),
-                                dbc.Col([
-                                    dbc.Label("AI Model & Thresholds", html_for="hybrid-model"),
-                                    dbc.Select(
-                                        id="hybrid-model",
-                                        options=[
-                                            {"label": "💰 GPT-4o Mini (Recommended)", "value": "gpt-4o-mini"},
-                                            {"label": "⚡ GPT-3.5 Turbo", "value": "gpt-3.5-turbo"},
-                                            {"label": "🚀 GPT-4o", "value": "gpt-4o"},
-                                            {"label": "👑 GPT-4 Turbo (Premium)", "value": "gpt-4-turbo"},
-                                        ],
-                                        value="gpt-4o-mini",
-                                        className="mb-2"
-                                    ),
-                                    dbc.Label("Semantic Threshold", html_for="semantic-threshold"),
-                                    dcc.Slider(
-                                        id="semantic-threshold",
-                                        min=0.1,
-                                        max=1.0,
-                                        value=0.7,
-                                        step=0.05,
-                                        marks={i/10: f"{i/10:.1f}" for i in range(1, 11, 2)},
-                                        tooltip={"placement": "bottom", "always_visible": True},
-                                        className="mb-2"
-                                    ),
-                                    dbc.Label("Fuzzy Threshold", html_for="fuzzy-threshold"),
-                                    dcc.Slider(
-                                        id="fuzzy-threshold",
-                                        min=50,
-                                        max=100,
-                                        value=80,
-                                        step=5,
-                                        marks={i: f"{i}" for i in range(50, 101, 25)},
-                                        tooltip={"placement": "bottom", "always_visible": True},
-                                        className="mb-3"
-                                    ),
-                                ], width=6),
-                            ]),
-                            
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Button(
-                                        "🔍 Search Bibliography",
-                                        id="search-button",
-                                        color="primary",
-                                        className="w-100 mb-3",
-                                        disabled=True
-                                    ),
-                                    dbc.FormText(id="search-button-help", children="Upload a bibliography file first to enable search"),
-                                ], width=6),
-                                dbc.Col([
-                                    dbc.Label("Max Results", html_for="max-results"),
-                                    dbc.Input(
-                                        id="max-results",
-                                        type="number",
-                                        min=1,
-                                        max=100,
-                                        value=20,
-                                        className="mb-3"
-                                    ),
-                                ], width=3),
-                                dbc.Col([
-                                    dbc.Label("LLM Threshold", html_for="llm-threshold"),
-                                    dbc.Input(
-                                        id="llm-threshold",
-                                        type="number",
-                                        min=0,
-                                        max=10,
-                                        step=0.5,
-                                        value=6.0,
-                                        className="mb-3"
-                                    ),
-                                ], width=3),
-                            ]),
-                        ])
-                    ], className="mb-4"),
-                    
-                    # Tag Generation Interface
-                    dbc.Card([
-                        dbc.CardHeader("🏷️ AI Tag Generation & Word Clouds"),
-                        dbc.CardBody([
-                            dbc.Alert([
-                                html.P([
-                                    html.Strong("Process & Generate Tags:"), " Applies filters AND generates AI tags for word clouds and tag analysis. Takes longer but enables all visualization features."
-                                ], className="mb-0"),
-                            ], color="success", className="mb-3"),
-                            
-                            # Tag Generation Settings
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Tag Sample Size", html_for="tag-sample-size"),
-                                    dbc.Input(
-                                        id="tag-sample-size",
-                                        type="number",
-                                        min=1,
-                                        value=30,
-                                        className="mb-3"
-                                    ),
-                                    dbc.FormText("Number of entries to use for tag generation"),
-                                ], width=4),
-                                dbc.Col([
-                                    dbc.Label("Max Entries to Tag", html_for="max-entries-to-tag"),
-                                    dbc.Input(
-                                        id="max-entries-to-tag",
-                                        type="number",
-                                        min=0,
-                                        value=0,
-                                        className="mb-3"
-                                    ),
-                                    dbc.FormText("Max entries to tag (0 for all)"),
-                                ], width=4),
-                                dbc.Col([
-                                    dbc.Label("Model", html_for="model-select"),
-                                    dbc.Select(
-                                        id="model-select",
-                                        options=[
-                                            {"label": "GPT-3.5 Turbo", "value": "gpt-3.5-turbo"},
-                                            {"label": "GPT-4", "value": "gpt-4"},
-                                        ],
-                                        value="gpt-3.5-turbo",
-                                        className="mb-3"
-                                    ),
-                                ], width=4),
-                            ]),
-                            
-                            dbc.Button(
-                                "🏷️ Process & Generate Tags",
-                                id="process-button",
-                                color="primary",
-                                className="w-100 mb-3",
-                                disabled=True
-                            ),
-                            
-                            # Word Cloud Customization (Collapsible)
-                            dbc.Collapse([
-                                html.Hr(),
-                                html.H6("Word Cloud Options", className="mb-3"),
+                    dbc.Tabs([
+                        dbc.Tab(label="🔍 Interactive Search", tab_id="search-interface-tab", children=[
+                            html.Div([
+                                # Explanation banner
+                                dbc.Alert([
+                                    html.P([
+                                        "Search your bibliography using natural language queries. This feature works ",
+                                        html.Strong("independently of tag generation"), 
+                                        " and searches directly through paper titles, abstracts, and any existing metadata."
+                                    ], className="mb-0"),
+                                ], color="info", className="mb-3"),
+                                
                                 dbc.Row([
                                     dbc.Col([
-                                        dbc.Label("Max Words"),
+                                        dbc.Label("Search Query", html_for="search-query"),
+                                        dbc.Input(
+                                            id="search-query",
+                                            type="text",
+                                            placeholder="e.g., chronic fatigue syndrome, machine learning, climate change",
+                                            className="mb-3"
+                                        ),
+                                        dbc.FormText("Enter any topic or research area - semantic search will find related papers even with different terminology"),
+                                    ], width=12),
+                                ]),
+                                
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("Search Methods", html_for="search-methods"),
+                                        dcc.Checklist(
+                                            id="search-methods",
+                                            options=[
+                                                {"label": "Exact Match (keywords)", "value": "exact"},
+                                                {"label": "Fuzzy Match (typos)", "value": "fuzzy"},
+                                                {"label": "Semantic Match (AI embeddings)", "value": "semantic"},
+                                                {"label": "🚀 Hybrid AI (embeddings + LLM)", "value": "hybrid"},
+                                                {"label": "🤖 LLM Only (premium quality)", "value": "llm_only"}
+                                            ],
+                                            value=["exact", "fuzzy", "semantic"],
+                                            inline=False,
+                                            className="mb-3"
+                                        ),
+                                        dbc.FormText([
+                                            html.Strong("Exact:"), " Finds papers containing your exact words. ",
+                                            html.Strong("Fuzzy:"), " Handles typos and variations. ",
+                                            html.Strong("Semantic:"), " Fast AI similarity using embeddings. ",
+                                            html.Strong("Hybrid:"), " Best balance - combines embeddings + LLM analysis. ",
+                                            html.Strong("LLM Only:"), " Premium quality - GPT analyzes ALL papers (expensive but thorough)."
+                                        ]),
+                                    ], width=6),
+                                    dbc.Col([
+                                        dbc.Label("AI Model & Thresholds", html_for="hybrid-model"),
+                                        dbc.Select(
+                                            id="hybrid-model",
+                                            options=[
+                                                {"label": "💰 GPT-4o Mini (Recommended)", "value": "gpt-4o-mini"},
+                                                {"label": "⚡ GPT-3.5 Turbo", "value": "gpt-3.5-turbo"},
+                                                {"label": "🚀 GPT-4o", "value": "gpt-4o"},
+                                                {"label": "👑 GPT-4 Turbo (Premium)", "value": "gpt-4-turbo"},
+                                            ],
+                                            value="gpt-4o-mini",
+                                            className="mb-2"
+                                        ),
+                                        dbc.Label("Semantic Threshold", html_for="semantic-threshold"),
                                         dcc.Slider(
-                                            id="max-words-slider",
-                                            min=10,
-                                            max=200,
-                                            step=10,
-                                            value=100,
-                                            marks={i: str(i) for i in range(0, 201, 50)},
-                                            className="mb-3"
+                                            id="semantic-threshold",
+                                            min=0.1,
+                                            max=1.0,
+                                            value=0.7,
+                                            step=0.05,
+                                            marks={i/10: f"{i/10:.1f}" for i in range(1, 11, 2)},
+                                            tooltip={"placement": "bottom", "always_visible": True},
+                                            className="mb-2"
                                         ),
-                                    ], width=12),
-                                ]),
-                                
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Label("Color Scheme"),
-                                        dcc.Dropdown(
-                                            id="color-scheme",
-                                            options=[
-                                                {"label": "Viridis", "value": "viridis"},
-                                                {"label": "Plasma", "value": "plasma"},
-                                                {"label": "Inferno", "value": "inferno"},
-                                                {"label": "Magma", "value": "magma"},
-                                                {"label": "Cividis", "value": "cividis"},
-                                                {"label": "Rainbow", "value": "rainbow"},
-                                            ],
-                                            value="viridis",
+                                        dbc.Label("Fuzzy Threshold", html_for="fuzzy-threshold"),
+                                        dcc.Slider(
+                                            id="fuzzy-threshold",
+                                            min=50,
+                                            max=100,
+                                            value=80,
+                                            step=5,
+                                            marks={i: f"{i}" for i in range(50, 101, 25)},
+                                            tooltip={"placement": "bottom", "always_visible": True},
                                             className="mb-3"
                                         ),
                                     ], width=6),
-                                    
-                                    dbc.Col([
-                                        dbc.Label("Background Color"),
-                                        dcc.Dropdown(
-                                            id="bg-color",
-                                            options=[
-                                                {"label": "White", "value": "white"},
-                                                {"label": "Black", "value": "black"},
-                                                {"label": "Light Gray", "value": "#f8f9fa"},
-                                                {"label": "Dark", "value": "#212529"},
-                                            ],
-                                            value="white",
-                                            className="mb-3"
-                                        ),
-                                    ], width=6),
-                                ]),
-                                
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Label("Word Cloud Type"),
-                                        dbc.RadioItems(
-                                            id="wordcloud-type",
-                                            options=[
-                                                {"label": "Static", "value": "static"},
-                                                {"label": "Interactive", "value": "interactive"},
-                                            ],
-                                            value="static",
-                                            inline=True,
-                                            className="mb-3"
-                                        ),
-                                    ], width=12),
                                 ]),
                                 
                                 dbc.Row([
                                     dbc.Col([
                                         dbc.Button(
-                                            "Update Word Cloud",
-                                            id="generate-wc-button",
+                                            "🔍 Search Bibliography",
+                                            id="search-button",
                                             color="primary",
-                                            className="w-100 mt-2",
-                                            disabled=False,
-                                            n_clicks=0
+                                            className="w-100 mb-3",
+                                            disabled=True
                                         ),
-                                    ], width=12),
+                                        dbc.FormText(id="search-button-help", children="Upload a bibliography file first to enable search"),
+                                    ], width=6),
+                                    dbc.Col([
+                                        dbc.Label("Max Results", html_for="max-results"),
+                                        dbc.Input(
+                                            id="max-results",
+                                            type="number",
+                                            min=1,
+                                            max=100,
+                                            value=20,
+                                            className="mb-3"
+                                        ),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("LLM Threshold", html_for="llm-threshold"),
+                                        dbc.Input(
+                                            id="llm-threshold",
+                                            type="number",
+                                            min=0,
+                                            max=10,
+                                            step=0.5,
+                                            value=6.0,
+                                            className="mb-3"
+                                        ),
+                                    ], width=3),
                                 ]),
-                            ], id="wordcloud-collapse", is_open=False),
-                            
-                            dbc.Button(
-                                "⚙️ Show/Hide Word Cloud Options",
-                                id="wordcloud-toggle",
-                                color="secondary",
-                                size="sm",
-                                className="w-100 mt-2"
-                            ),
+                            ], className="p-3")
                         ]),
-                    ], className="mb-4"),
+                        
+                        dbc.Tab(label="🏷️ AI Tags & Word Clouds", tab_id="tagging-interface-tab", children=[
+                            html.Div([
+                                dbc.Alert([
+                                    html.P([
+                                        html.Strong("Process & Generate Tags:"), " Applies filters AND generates AI tags for word clouds and tag analysis. Takes longer but enables all visualization features."
+                                    ], className="mb-0"),
+                                ], color="success", className="mb-3"),
+                                
+                                # Tag Generation Settings
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("Tag Sample Size", html_for="tag-sample-size"),
+                                        dbc.Input(
+                                            id="tag-sample-size",
+                                            type="number",
+                                            min=1,
+                                            value=30,
+                                            className="mb-3"
+                                        ),
+                                        dbc.FormText("Number of entries to use for tag generation"),
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Label("Max Entries to Tag", html_for="max-entries-to-tag"),
+                                        dbc.Input(
+                                            id="max-entries-to-tag",
+                                            type="number",
+                                            min=0,
+                                            value=0,
+                                            className="mb-3"
+                                        ),
+                                        dbc.FormText("Max entries to tag (0 for all)"),
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Label("Model", html_for="model-select"),
+                                        dbc.Select(
+                                            id="model-select",
+                                            options=[
+                                                {"label": "GPT-3.5 Turbo", "value": "gpt-3.5-turbo"},
+                                                {"label": "GPT-4", "value": "gpt-4"},
+                                            ],
+                                            value="gpt-3.5-turbo",
+                                            className="mb-3"
+                                        ),
+                                    ], width=4),
+                                ]),
+                                
+                                dbc.Button(
+                                    "🏷️ Process & Generate Tags",
+                                    id="process-button",
+                                    color="primary",
+                                    className="w-100 mb-3",
+                                    disabled=True
+                                ),
+                                
+                                # Word Cloud Customization (Collapsible)
+                                dbc.Collapse([
+                                    html.Hr(),
+                                    html.H6("Word Cloud Options", className="mb-3"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Max Words"),
+                                            dcc.Slider(
+                                                id="max-words-slider",
+                                                min=10,
+                                                max=200,
+                                                step=10,
+                                                value=100,
+                                                marks={i: str(i) for i in range(0, 201, 50)},
+                                                className="mb-3"
+                                            ),
+                                        ], width=12),
+                                    ]),
+                                    
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Color Scheme"),
+                                            dcc.Dropdown(
+                                                id="color-scheme",
+                                                options=[
+                                                    {"label": "Viridis", "value": "viridis"},
+                                                    {"label": "Plasma", "value": "plasma"},
+                                                    {"label": "Inferno", "value": "inferno"},
+                                                    {"label": "Magma", "value": "magma"},
+                                                    {"label": "Cividis", "value": "cividis"},
+                                                    {"label": "Rainbow", "value": "rainbow"},
+                                                ],
+                                                value="viridis",
+                                                className="mb-3"
+                                            ),
+                                        ], width=6),
+                                        
+                                        dbc.Col([
+                                            dbc.Label("Background Color"),
+                                            dcc.Dropdown(
+                                                id="bg-color",
+                                                options=[
+                                                    {"label": "White", "value": "white"},
+                                                    {"label": "Black", "value": "black"},
+                                                    {"label": "Light Gray", "value": "#f8f9fa"},
+                                                    {"label": "Dark", "value": "#212529"},
+                                                ],
+                                                value="white",
+                                                className="mb-3"
+                                            ),
+                                        ], width=6),
+                                    ]),
+                                    
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Word Cloud Type"),
+                                            dbc.RadioItems(
+                                                id="wordcloud-type",
+                                                options=[
+                                                    {"label": "Static", "value": "static"},
+                                                    {"label": "Interactive", "value": "interactive"},
+                                                ],
+                                                value="static",
+                                                inline=True,
+                                                className="mb-3"
+                                            ),
+                                        ], width=12),
+                                    ]),
+                                    
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Button(
+                                                "Update Word Cloud",
+                                                id="generate-wc-button",
+                                                color="primary",
+                                                className="w-100 mt-2",
+                                                disabled=False,
+                                                n_clicks=0
+                                            ),
+                                        ], width=12),
+                                    ]),
+                                ], id="wordcloud-collapse", is_open=False),
+                                
+                                dbc.Button(
+                                    "⚙️ Show/Hide Word Cloud Options",
+                                    id="wordcloud-toggle",
+                                    color="secondary",
+                                    size="sm",
+                                    className="w-100 mt-2"
+                                ),
+                                
+                                # Results section - Word clouds, tag frequencies, and data table
+                                html.Hr(className="my-4"),
+                                html.H6("📊 Results & Visualizations", className="mb-3"),
+                                
+                                dbc.Tabs([
+                                    dbc.Tab(label="Word Cloud", tab_id="wordcloud-tab", children=[
+                                        html.Div(className="text-center mt-3", children=[
+                                            dcc.Graph(
+                                                id='word-cloud-graph',
+                                                config={'displayModeBar': False},
+                                                style={
+                                                    'width': '100%',
+                                                    'height': '500px',
+                                                    'border': 'none',
+                                                    'borderRadius': '5px',
+                                                    'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+                                                    'display': 'none'
+                                                }
+                                            ),
+                                            html.Div(id="selected-word", className="h5 mt-3 mb-2"),
+                                            dbc.Alert(
+                                                id="wordcloud-error",
+                                                color="danger",
+                                                is_open=False,
+                                                dismissable=True,
+                                                className="mt-3"
+                                            ),
+                                            html.Div(id="papers-container", className="mt-3")
+                                        ]),
+                                        dbc.Row(
+                                            dbc.Col([
+                                                dbc.Button(
+                                                    "Download Word Cloud",
+                                                    id="download-wc-button",
+                                                    color="success",
+                                                    className="mt-3 w-100",
+                                                    disabled=True
+                                                ),
+                                            ], width=8, className="mx-auto"),
+                                            className="mb-3"
+                                        ),
+                                    ]),
+                                    
+                                    dbc.Tab(label="Tag Frequencies", tab_id="frequencies-tab", children=[
+                                        dcc.Graph(id="frequencies-plot", className="mt-3", style={'height': '400px'}),
+                                        dbc.Row(
+                                            dbc.Col([
+                                                dbc.Button(
+                                                    "Download Frequencies",
+                                                    id="download-freq-button",
+                                                    color="success",
+                                                    className="mt-3 w-100"
+                                                ),
+                                            ], width=8, className="mx-auto"),
+                                            className="mb-3"
+                                        ),
+                                    ]),
+                                    
+                                    dbc.Tab(label="Data Table", tab_id="table-tab", children=[
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dbc.Label("Filter by Tags", html_for="tag-filter"),
+                                                dcc.Dropdown(
+                                                    id="tag-filter",
+                                                    options=[],
+                                                    multi=True,
+                                                    searchable=True,
+                                                    placeholder="Select tags to filter...",
+                                                    className="mb-3"
+                                                ),
+                                            ], width=6),
+                                            dbc.Col([
+                                                dbc.RadioItems(
+                                                    id="download-type",
+                                                    options=[
+                                                        {"label": "Download All Entries", "value": "all"},
+                                                        {"label": "Download Filtered Entries", "value": "filtered"}
+                                                    ],
+                                                    value="all",
+                                                    inline=True,
+                                                    className="mb-2"
+                                                ),
+                                                dbc.Button(
+                                                    "Download BibTeX",
+                                                    id="download-bibtex-btn",
+                                                    color="primary",
+                                                    className="mb-3"
+                                                )
+                                            ], width=6),
+                                        ]),
+                                        html.Div(id="data-table-container", className="mt-3"),
+                                    ]),
+                                ], id="results-tabs", active_tab="wordcloud-tab"),
+                            ], className="p-3")
+                        ]),
+                        
+                    ], id="right-panel-tabs", active_tab="search-interface-tab"),
                 ], md=6),  # Right column - 50% width
             ]),
             
@@ -494,100 +587,6 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                 ], width=12)
             ]),
             
-            # Visualization Results Section (Full Width)  
-            dbc.Row([
-                dbc.Col([
-                    dbc.Tabs([
-                        dbc.Tab(label="Word Cloud", tab_id="wordcloud-tab", children=[
-                            html.Div(className="text-center mt-3", children=[
-                                dcc.Graph(
-                                    id='word-cloud-graph',
-                                    config={'displayModeBar': False},
-                                    style={
-                                        'width': '100%',
-                                        'height': '600px',
-                                        'border': 'none',
-                                        'borderRadius': '5px',
-                                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
-                                        'display': 'none'
-                                    }
-                                ),
-                                html.Div(id="selected-word", className="h4 mt-3 mb-2"),
-                                dbc.Alert(
-                                    id="wordcloud-error",
-                                    color="danger",
-                                    is_open=False,
-                                    dismissable=True,
-                                    className="mt-3"
-                                ),
-                                html.Div(id="papers-container", className="mt-3")
-                            ]),
-                            dbc.Row(
-                                dbc.Col([
-                                    dbc.Button(
-                                        "Download Word Cloud",
-                                        id="download-wc-button",
-                                        color="success",
-                                        className="mt-3 w-100",
-                                        disabled=True
-                                    ),
-                                ], width=6, className="mx-auto"),
-                                className="mb-3"
-                            ),
-                        ]),
-                        
-                        dbc.Tab(label="Tag Frequencies", tab_id="frequencies-tab", children=[
-                            dcc.Graph(id="frequencies-plot", className="mt-3"),
-                            dbc.Row(
-                                dbc.Col([
-                                    dbc.Button(
-                                        "Download Frequencies",
-                                        id="download-freq-button",
-                                        color="success",
-                                        className="mt-3 w-100"
-                                    ),
-                                ], width=6, className="mx-auto"),
-                                className="mb-3"
-                            ),
-                        ]),
-                        
-                        dbc.Tab(label="Data Table", tab_id="table-tab", children=[
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Filter by Tags", html_for="tag-filter"),
-                                    dcc.Dropdown(
-                                        id="tag-filter",
-                                        options=[],
-                                        multi=True,
-                                        searchable=True,
-                                        placeholder="Select tags to filter...",
-                                        className="mb-3"
-                                    ),
-                                ], width=4),
-                                dbc.Col([
-                                    dbc.RadioItems(
-                                        id="download-type",
-                                        options=[
-                                            {"label": "Download All Entries", "value": "all"},
-                                            {"label": "Download Filtered Entries", "value": "filtered"}
-                                        ],
-                                        value="all",
-                                        inline=True,
-                                        className="mb-2"
-                                    ),
-                                    dbc.Button(
-                                        "Download BibTeX",
-                                        id="download-bibtex-btn",
-                                        color="primary",
-                                        className="mb-3"
-                                    )
-                                ], width=4),
-                            ]),
-                            html.Div(id="data-table-container", className="mt-3"),
-                        ]),
-                    ], id="tabs", active_tab="search-tab"),
-                ], md=8),
-            ]),
         ]),
         
         # Footer
