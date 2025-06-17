@@ -23,6 +23,7 @@ from .visualization import (
     create_tag_network,
     plot_tag_frequencies
 )
+from .semantic_search import search_papers
 
 # Set up logging
 logging.basicConfig(
@@ -101,6 +102,49 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         "--network",
         action="store_true",
         help="Generate tag co-occurrence network"
+    )
+    
+    # Search command
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search for papers by topic using semantic similarity"
+    )
+    search_parser.add_argument(
+        "query",
+        help="Search query (e.g., 'chronic fatigue syndrome')"
+    )
+    search_parser.add_argument(
+        "input",
+        help="Input CSV file with paper data"
+    )
+    search_parser.add_argument(
+        "-o", "--output",
+        help="Output CSV file for search results"
+    )
+    search_parser.add_argument(
+        "--methods",
+        nargs="+",
+        choices=["exact", "fuzzy", "semantic"],
+        default=["exact", "fuzzy", "semantic"],
+        help="Search methods to use (default: all methods)"
+    )
+    search_parser.add_argument(
+        "--semantic-threshold",
+        type=float,
+        default=0.7,
+        help="Minimum similarity score for semantic search (0-1, default: 0.7)"
+    )
+    search_parser.add_argument(
+        "--fuzzy-threshold",
+        type=float,
+        default=80.0,
+        help="Minimum similarity score for fuzzy search (0-100, default: 80)"
+    )
+    search_parser.add_argument(
+        "--max-results",
+        type=int,
+        default=50,
+        help="Maximum number of results to return (default: 50)"
     )
     
     # Dashboard command
@@ -347,6 +391,71 @@ def visualize_command(args: argparse.Namespace) -> None:
     
     logger.info(f"Visualizations saved to {output_dir}")
 
+def search_command(args: argparse.Namespace) -> None:
+    """Handle the search command.
+    
+    Args:
+        args: Parsed command line arguments
+    """
+    try:
+        logger.info(f"Searching for '{args.query}' in {args.input}")
+        logger.info(f"Methods: {', '.join(args.methods)}")
+        logger.info(f"Semantic threshold: {args.semantic_threshold}")
+        logger.info(f"Fuzzy threshold: {args.fuzzy_threshold}")
+        
+        # Perform search
+        results = search_papers(
+            query=args.query,
+            input_file=args.input,
+            methods=args.methods,
+            semantic_threshold=args.semantic_threshold,
+            fuzzy_threshold=args.fuzzy_threshold,
+            max_results=args.max_results,
+            output_file=args.output
+        )
+        
+        if results.empty:
+            logger.info("No results found for the given query and thresholds.")
+            return
+        
+        # Display results summary
+        logger.info(f"Found {len(results)} results")
+        
+        # Show top results
+        print(f"\nTop {min(10, len(results))} results for '{args.query}':")
+        print("=" * 80)
+        
+        for idx, row in results.head(10).iterrows():
+            print(f"\n{idx + 1}. {row.get('title', 'No title')}")
+            print(f"   Authors: {row.get('author', 'No author')}")
+            print(f"   Year: {row.get('year', 'No year')}")
+            print(f"   Overall Score: {row['search_score']:.3f}")
+            
+            scores = []
+            if row['exact_score'] > 0:
+                scores.append(f"Exact: {row['exact_score']:.3f}")
+            if row['fuzzy_score'] > 0:
+                scores.append(f"Fuzzy: {row['fuzzy_score']:.3f}")
+            if row['semantic_score'] > 0:
+                scores.append(f"Semantic: {row['semantic_score']:.3f}")
+            
+            if scores:
+                print(f"   Method Scores: {', '.join(scores)}")
+            
+            # Show first 150 chars of abstract
+            abstract = row.get('abstract', '')
+            if abstract:
+                print(f"   Abstract: {abstract[:150]}{'...' if len(abstract) > 150 else ''}")
+        
+        if args.output:
+            logger.info(f"Full results saved to {args.output}")
+        else:
+            logger.info("Use --output to save full results to a file")
+            
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        sys.exit(1)
+
 def dashboard_command(args: argparse.Namespace) -> None:
     """Handle the dashboard command.
     
@@ -376,6 +485,8 @@ def main() -> None:
         analyze_command(args)
     elif args.command == "visualize":
         visualize_command(args)
+    elif args.command == "search":
+        search_command(args)
     elif args.command == "dashboard":
         dashboard_command(args)
     else:

@@ -172,3 +172,6 @@ freshenv/
 .Rhistory
 .RData
 .Ruserdata
+
+.embeddings_cache/
+.llm_relevance_cache/
