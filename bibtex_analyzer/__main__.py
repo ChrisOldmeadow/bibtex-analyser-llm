@@ -53,14 +53,18 @@ def parse_args(args: List[str]) -> argparse.Namespace:
                              help='Model to use for tag generation (default: gpt-3.5-turbo)')
     
     # Analyze command
-    analyze_parser = subparsers.add_parser('analyze', help='Analyze a BibTeX file and generate tags', parents=[parent_parser])
-    analyze_parser.add_argument('input', type=str, help='Input BibTeX file')
+    analyze_parser = subparsers.add_parser('analyze', help='Analyze a BibTeX or CSV file and generate tags', parents=[parent_parser])
+    analyze_parser.add_argument('input', type=str, help='Input BibTeX or CSV file')
     analyze_parser.add_argument('--output', '-o', type=str, default='tagged_abstracts.csv',
                               help='Output CSV file (default: tagged_abstracts.csv)')
     analyze_parser.add_argument('--tag-samples', type=int, default=30,
                               help='Number of samples to use for tag generation (default: 30)')
     analyze_parser.add_argument('--subset-size', type=int, default=100,
                               help='Process only a subset of entries (0 for all, default: 100)')
+    analyze_parser.add_argument('--min-year', type=int, 
+                              help='Filter entries to include only those from this year onwards')
+    analyze_parser.add_argument('--max-year', type=int,
+                              help='Filter entries to include only those up to this year')
     analyze_parser.add_argument('--wordcloud', type=str, nargs='?', const='png', choices=['png', 'html', 'both'],
                               help='Generate word cloud (default: png if no value provided, omit to skip)')
     analyze_parser.add_argument(
@@ -133,9 +137,29 @@ def analyze_command(args: argparse.Namespace) -> None:
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Process the BibTeX file
-    logger.info(f"Processing BibTeX file: {args.input}")
+    # Process the bibliography file
+    logger.info(f"Processing bibliography file: {args.input}")
     entries = process_bibtex_file(args.input)
+    
+    # Apply year filtering if specified
+    if hasattr(args, 'min_year') and args.min_year or hasattr(args, 'max_year') and args.max_year:
+        processor = BibtexProcessor()
+        processor.entries = entries
+        
+        filters = {}
+        if hasattr(args, 'min_year') and args.min_year:
+            filters['min_year'] = args.min_year
+            logger.info(f"Filtering entries from year {args.min_year} onwards")
+        if hasattr(args, 'max_year') and args.max_year:
+            filters['max_year'] = args.max_year
+            logger.info(f"Filtering entries up to year {args.max_year}")
+            
+        original_count = len(entries)
+        entries = processor.filter_entries(**filters)
+        filtered_count = len(entries)
+        
+        if filtered_count < original_count:
+            logger.info(f"Year filtering: {original_count} entries -> {filtered_count} entries")
     
     # Filter out entries without abstracts
     entries_with_abstracts = [e for e in entries if e.get('abstract')]

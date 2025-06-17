@@ -1,10 +1,12 @@
 # Bibtex Analyzer GPT
 
-A powerful tool for analyzing and visualizing BibTeX bibliographies using AI-powered tagging and interactive visualizations. This tool helps researchers, academics, and anyone working with academic papers to better understand and explore their reference collections.
+A powerful tool for analyzing and visualizing BibTeX and CSV bibliographies using AI-powered tagging and interactive visualizations. This tool helps researchers, academics, and anyone working with academic papers to better understand and explore their reference collections.
+
+> **💡 Tip**: For incomplete bibliographies missing abstracts or metadata, first use [Publication Enricher](https://github.com/ChrisOldmeadow/publication-enricher) to clean and enrich your data, then analyze with Bibtex Analyzer GPT for optimal results.
 
 ## Features
 
-- **BibTeX Processing**: Extract and process BibTeX entries from `.bib` files
+- **Multi-format Processing**: Extract and process bibliography entries from `.bib` (BibTeX) and `.csv` files
 - **AI-Powered Tagging**: Generate topic tags using OpenAI's GPT models
 - **Interactive Visualizations**:
   - Optional word clouds (static PNG and/or interactive HTML)
@@ -66,8 +68,10 @@ pip install -r requirements-dev.txt
 ### Command Line Interface
 
 ```bash
-# Analyze a BibTeX file and generate tags with optional word cloud
+# Analyze a BibTeX or CSV file and generate tags with optional word cloud
 bibtex-analyzer analyze papers.bib --output results.csv --tag-samples 50 --wordcloud
+# Or with a CSV file
+bibtex-analyzer analyze bibliography.csv --output results.csv --tag-samples 50 --wordcloud
 
 # Word cloud options:
 # --wordcloud         # Default: generate PNG word cloud
@@ -85,15 +89,20 @@ bibtex-analyzer dashboard
 # Generate visualizations from tagged data
 bibtex-analyzer visualize results.csv
 
-# Analyze a BibTeX file and generate tags
+# Analyze a BibTeX or CSV file and generate tags
 # Using default settings (30 samples for tag generation, tag all entries)
 bibtex-analyzer analyze input.bib --output tagged_papers.csv
 
-# Customize tag generation and processing
+# Filter by publication year
+bibtex-analyzer analyze input.bib --output recent_papers.csv --min-year 2020 --max-year 2023
+
+# Customize tag generation and processing with year filtering
 bibtex-analyzer analyze input.bib \
     --output tagged_papers.csv \
     --tag-samples 50 \
-    --subset-size 200
+    --subset-size 200 \
+    --min-year 2020 \
+    --max-year 2023
 
 # Use a subset of entries for faster processing
 bibtex-analyzer analyze large_library.bib \
@@ -113,8 +122,10 @@ bibtex-analyzer dashboard
 ```python
 from bibtex_analyzer import process_bibtex_file, TagGenerator
 
-# Process a BibTeX file and get tagged entries
+# Process a BibTeX or CSV file and get tagged entries
 entries = process_bibtex_file("input.bib", output_file="output/tagged.csv")
+# Or with CSV
+entries = process_bibtex_file("bibliography.csv", output_file="output/tagged.csv")
 
 # Generate tags for a list of entries
 tag_generator = TagGenerator(api_key="your_api_key")
@@ -145,12 +156,13 @@ options:
 
 ```
 usage: bibtex-analyzer analyze [-h] [--output OUTPUT] [--tag-samples TAG_SAMPLES]
-                              [--subset-size SUBSET_SIZE] [--model MODEL]
+                              [--subset-size SUBSET_SIZE] [--min-year MIN_YEAR]
+                              [--max-year MAX_YEAR] [--model MODEL]
                               [--methods-model METHODS_MODEL]
                               input
 
 positional arguments:
-  input                 Input BibTeX file
+  input                 Input BibTeX or CSV file
 
 options:
   -h, --help            show this help message and exit
@@ -160,6 +172,8 @@ options:
                         Number of samples to use for tag generation (default: 30)
   --subset-size SUBSET_SIZE
                         Number of random entries to tag (0 for all) (default: 100)
+  --min-year MIN_YEAR   Filter entries to include only those from this year onwards
+  --max-year MAX_YEAR   Filter entries to include only those up to this year
   --model MODEL         Model to use for tag generation (default: gpt-3.5-turbo)
   --methods-model METHODS_MODEL
                         Model to use for statistical methods (default: gpt-4)
@@ -199,12 +213,15 @@ options:
 The interactive dashboard provides a user-friendly web interface for exploring your bibliography. Here's what you can do:
 
 ### 1. Upload & Process
-- Drag and drop your BibTeX file (.bib) or click to browse
-- Upload your BibTeX file
+- Drag and drop your bibliography file (.bib or .csv) or click to browse
+- Upload your BibTeX or CSV file
 - Configure tag generation settings:
   - Tag sample size
   - Maximum entries to tag
   - Model selection (GPT-3.5 Turbo or GPT-4)
+- Apply year filtering:
+  - Min Year: Filter entries from this year onwards
+  - Max Year: Filter entries up to this year
 - Monitor processing progress with real-time logs
 
 ### 2. Word Cloud Customization
@@ -253,6 +270,80 @@ The interactive dashboard provides a user-friendly web interface for exploring y
 - Choose different OpenAI models
 - Customize visualization appearance
 
+## Supported File Formats
+
+### BibTeX Files (.bib)
+Standard BibTeX format with fields like:
+```bibtex
+@article{example2023,
+    title={Example Paper Title},
+    author={Author, First and Second, Author},
+    journal={Example Journal},
+    year={2023},
+    abstract={This is the abstract of the paper...},
+    doi={10.1234/example.2023}
+}
+```
+
+### CSV Files (.csv)
+CSV format with bibliography data columns:
+```csv
+id,title,author,year,journal,abstract,doi
+1,"Example Paper Title","Author, First and Second, Author",2023,"Example Journal","This is the abstract...",10.1234/example.2023
+```
+
+**Required CSV columns:**
+- `title`: Paper title
+- `author`: Author names
+- `abstract`: Paper abstract (essential for tag generation)
+
+**Optional CSV columns:**
+- `id`: Unique identifier (auto-generated if missing)
+- `year`: Publication year
+- `journal`: Journal name
+- `doi`: Digital Object Identifier
+- Any other bibliographic fields
+
+**Year Filtering:**
+Both formats support year filtering. Years are extracted intelligently from various formats:
+- `2023` (standard)
+- `2023-01-01` (date format)
+- `c2023` (circa format)
+- Only years 1000-2100 are considered valid
+
+## Bibliography Data Quality
+
+### Improving Incomplete Bibliographies with Publication Enricher
+
+For incomplete bibliographies missing abstracts, DOIs, or other metadata, consider using the **[Publication Enricher](https://github.com/ChrisOldmeadow/publication-enricher)** project to clean and enrich your data before analysis:
+
+**Publication Enricher Features:**
+- **Missing Field Detection**: Identifies incomplete entries lacking abstracts, DOIs, journals, etc.
+- **Automated Enrichment**: Fetches missing metadata from CrossRef, PubMed, and other sources
+- **Data Validation**: Verifies existing fields and corrects formatting issues
+- **Duplicate Detection**: Identifies and helps merge duplicate entries
+- **Format Conversion**: Converts between BibTeX, CSV, RIS, and other formats
+- **Quality Reports**: Generates detailed reports on bibliography completeness
+
+**Recommended Workflow:**
+1. **Clean your bibliography** with Publication Enricher to add missing abstracts and metadata
+2. **Analyze the enriched data** with Bibtex Analyzer GPT for AI-powered tagging and visualization
+3. **Export results** in your preferred format with complete bibliographic information
+
+**Example Integration:**
+```bash
+# Step 1: Enrich incomplete bibliography
+publication-enricher enrich incomplete_refs.bib --output enriched_refs.csv --add-abstracts --verify-dois
+
+# Step 2: Analyze enriched bibliography with year filtering
+bibtex-analyzer analyze enriched_refs.csv --output tagged_results.csv --min-year 2020
+
+# Step 3: Generate visualizations
+bibtex-analyzer visualize tagged_results.csv --wordcloud both
+```
+
+This workflow ensures maximum data quality and more accurate tag generation, since abstracts are essential for meaningful AI analysis.
+
 ## Advanced Configuration
 
 ### Environment Variables
@@ -284,24 +375,40 @@ You can customize the tag generation prompt by creating a `prompts` directory in
 # Analyze a BibTeX file and generate tags
 bibtex-analyzer analyze papers.bib --output results.csv
 
+# Analyze a CSV file and generate tags
+bibtex-analyzer analyze bibliography.csv --output results.csv
+
 # Launch the dashboard to explore results
 bibtex-analyzer dashboard
 ```
 
-### Example 2: Advanced Analysis
+### Example 2: Advanced Analysis with Year Filtering
 
 ```bash
-# Use more samples for better tag quality
+# Analyze recent papers (2020-2023) with better tag quality
 bibtex-analyzer analyze papers.bib \
-    --output results.csv \
+    --output recent_papers.csv \
+    --min-year 2020 \
+    --max-year 2023 \
     --tag-samples 100 \
     --model gpt-4
 
 # Generate both PNG and HTML word clouds
-bibtex-analyzer visualize results.csv --wordcloud both
+bibtex-analyzer visualize recent_papers.csv --wordcloud both
 ```
 
-### Example 3: Docker Deployment
+### Example 3: CSV Analysis with Filtering
+
+```bash
+# Process a large CSV bibliography, filtering recent papers only
+bibtex-analyzer analyze large_bibliography.csv \
+    --output filtered_results.csv \
+    --min-year 2022 \
+    --tag-samples 50 \
+    --subset-size 200
+```
+
+### Example 4: Docker Deployment
 
 You can also run the dashboard in a Docker container:
 

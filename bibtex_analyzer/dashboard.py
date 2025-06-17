@@ -76,14 +76,15 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
-                        dbc.CardHeader("1. Upload & Process BibTeX File"),
+                        dbc.CardHeader("1. Upload & Process Bibliography File"),
                         dbc.CardBody([
                             dcc.Upload(
                                 id='upload-bibtex',
                                 children=html.Div([
                                     'Drag and Drop or ',
-                                    html.A('Select BibTeX File')
+                                    html.A('Select BibTeX or CSV File')
                                 ]),
+                                accept='.bib,.csv',
                                 style={
                                     'width': '100%',
                                     'height': '60px',
@@ -136,6 +137,30 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                         className="mb-3"
                                     ),
                                 ], width=4),
+                            ]),
+                            
+                            # Year filtering options
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Min Year", html_for="min-year"),
+                                    dbc.Input(
+                                        id="min-year",
+                                        type="number",
+                                        placeholder="e.g., 2020",
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText("Filter entries from this year onwards"),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Label("Max Year", html_for="max-year"),
+                                    dbc.Input(
+                                        id="max-year",
+                                        type="number",
+                                        placeholder="e.g., 2023",
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText("Filter entries up to this year"),
+                                ], width=6),
                             ]),
                             
                             dbc.Button(
@@ -1517,34 +1542,69 @@ def validate_file_exists(file_path: Path, logger: 'DashLogger') -> Optional[Tupl
     return None
 
 def process_bibtex_entries(file_path: Path, logger: 'DashLogger') -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Process BibTeX entries from a file.
+    """Process bibliography entries from a BibTeX or CSV file.
     
     Args:
-        file_path: Path to the BibTeX file
+        file_path: Path to the BibTeX or CSV file
         logger: Logger for tracking progress
         
     Returns:
-        DataFrame of BibTeX entries and any error message
+        DataFrame of bibliography entries and any error message
     """
     try:
-        # Read file content
-        logger.log_info(f"Reading BibTeX file: {file_path.name}")
-        with open(file_path, 'r', encoding='utf-8') as f:
-            bibtex_str = f.read()
-            
-        # Parse BibTeX data
-        logger.log_info("Parsing BibTeX entries...")
-        try:
-            bib_database = bibtexparser.loads(bibtex_str)
-            entries = bib_database.entries
-            logger.log_info(f"Found {len(entries)} entries")
-        except Exception as e:
-            error_msg = "Failed to parse BibTeX"
-            logger.log_error(error_msg, e)
-            return None, error_msg
+        # Detect file format and read accordingly
+        file_ext = file_path.suffix.lower()
+        logger.log_info(f"Reading {file_ext.upper().replace('.', '')} file: {file_path.name}")
+        
+        if file_ext == '.csv':
+            # Process CSV file
+            logger.log_info("Parsing CSV entries...")
+            try:
+                df = pd.read_csv(file_path)
+                entries = df.to_dict('records')
+                
+                # Normalize entries to match expected format
+                normalized_entries = []
+                for i, entry in enumerate(entries):
+                    clean_entry = {}
+                    for key, value in entry.items():
+                        if pd.notna(value):
+                            clean_entry[key.lower()] = str(value)
+                        else:
+                            clean_entry[key.lower()] = ''
+                    
+                    # Ensure ID field exists
+                    if 'id' not in clean_entry and 'ID' not in clean_entry:
+                        clean_entry['ID'] = f"entry_{i + 1}"
+                    elif 'id' in clean_entry:
+                        clean_entry['ID'] = clean_entry['id']
+                    
+                    normalized_entries.append(clean_entry)
+                
+                entries = normalized_entries
+                logger.log_info(f"Found {len(entries)} entries")
+            except Exception as e:
+                error_msg = "Failed to parse CSV"
+                logger.log_error(error_msg, e)
+                return None, error_msg
+        else:
+            # Process BibTeX file (default)
+            with open(file_path, 'r', encoding='utf-8') as f:
+                bibtex_str = f.read()
+                
+            # Parse BibTeX data
+            logger.log_info("Parsing BibTeX entries...")
+            try:
+                bib_database = bibtexparser.loads(bibtex_str)
+                entries = bib_database.entries
+                logger.log_info(f"Found {len(entries)} entries")
+            except Exception as e:
+                error_msg = "Failed to parse BibTeX"
+                logger.log_error(error_msg, e)
+                return None, error_msg
             
         if not entries:
-            error_msg = "No entries found in the BibTeX file"
+            error_msg = f"No entries found in the {file_ext.upper().replace('.', '')} file"
             logger.log_error(error_msg)
             return None, error_msg
             
@@ -1849,10 +1909,12 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         [State('upload-bibtex', 'filename'),
          State('tag-sample-size', 'value'),
          State('max-entries-to-tag', 'value'),
-         State('model-select', 'value')],
+         State('model-select', 'value'),
+         State('min-year', 'value'),
+         State('max-year', 'value')],
         prevent_initial_call=True
     )
-    def process_bibtex(n_clicks, filename, tag_sample_size, max_entries_to_tag, model):
+    def process_bibtex(n_clicks, filename, tag_sample_size, max_entries_to_tag, model, min_year, max_year):
         """Process the uploaded BibTeX file and generate tags with detailed logging."""
         if n_clicks is None or not filename:
             raise PreventUpdate
@@ -1882,10 +1944,30 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             try:
                 log = update_log(f"Starting processing of {filename}")
                 entries = process_bibtex_file(file_path)
-                log = update_log(f"Found {len(entries)} entries in the BibTeX file")
+                log = update_log(f"Found {len(entries)} entries in the file")
+                
+                # Apply year filtering if specified
+                if min_year or max_year:
+                    processor = BibtexProcessor()
+                    processor.entries = entries
+                    
+                    filters = {}
+                    if min_year:
+                        filters['min_year'] = min_year
+                        log = update_log(f"Filtering entries from year {min_year} onwards")
+                    if max_year:
+                        filters['max_year'] = max_year
+                        log = update_log(f"Filtering entries up to year {max_year}")
+                    
+                    original_count = len(entries)
+                    entries = processor.filter_entries(**filters)
+                    filtered_count = len(entries)
+                    
+                    if filtered_count < original_count:
+                        log = update_log(f"Year filtering: {original_count} entries -> {filtered_count} entries")
                 
                 if not entries:
-                    error_msg = "Error: No entries found in the BibTeX file"
+                    error_msg = "Error: No entries found after filtering"
                     return (
                         no_update,
                         no_update,
