@@ -13,13 +13,19 @@ A powerful tool for analyzing and visualizing BibTeX and CSV bibliographies usin
   - Clickable word clouds that link to relevant papers
   - Tag frequency analysis
   - Interactive tag networks
-- **Filtering & Searching**: Easily filter and search through your bibliography
+- **Semantic Search**: Advanced topic-based search using AI embeddings:
+  - Exact match (case-insensitive)
+  - Fuzzy matching for typos and variations
+  - Semantic similarity using OpenAI embeddings
+  - Multi-level search combining all methods
+- **Year Filtering**: Filter entries by publication year range
 - **Export Options**: Save results in multiple formats (CSV, HTML, PNG, PDF)
 - **Interactive Dashboard**: Web-based interface for exploring your bibliography with:
   - File upload and processing
   - Real-time word cloud generation
   - Tag frequency analysis
   - Data table with filtering and sorting
+  - Semantic search interface for topic discovery
   - Export functionality
   - Customizable visualization options
 
@@ -89,6 +95,10 @@ bibtex-analyzer dashboard
 # Generate visualizations from tagged data
 bibtex-analyzer visualize results.csv
 
+# Search for papers by topic using semantic similarity
+bibtex-analyzer search "chronic fatigue syndrome" results.csv --output search_results.csv
+bibtex-analyzer search "machine learning" papers.csv --methods semantic --semantic-threshold 0.8
+
 # Analyze a BibTeX or CSV file and generate tags
 # Using default settings (30 samples for tag generation, tag all entries)
 bibtex-analyzer analyze input.bib --output tagged_papers.csv
@@ -120,7 +130,7 @@ bibtex-analyzer dashboard
 ### Python API
 
 ```python
-from bibtex_analyzer import process_bibtex_file, TagGenerator
+from bibtex_analyzer import process_bibtex_file, TagGenerator, SemanticSearcher, search_papers
 
 # Process a BibTeX or CSV file and get tagged entries
 entries = process_bibtex_file("input.bib", output_file="output/tagged.csv")
@@ -133,19 +143,42 @@ tags = tag_generator.generate_tags_for_abstracts(entries)
 
 # Assign tags to entries
 tagged_entries = tag_generator.assign_tags_to_abstracts(entries, tags)
+
+# Search for papers by topic
+results = search_papers(
+    query="chronic fatigue syndrome",
+    input_file="tagged_papers.csv",
+    methods=["exact", "fuzzy", "semantic"],
+    semantic_threshold=0.7
+)
+
+# Advanced semantic search
+searcher = SemanticSearcher(api_key="your_api_key")
+import pandas as pd
+df = pd.read_csv("papers.csv")
+
+# Multi-level search
+search_results = searcher.multi_search(
+    query="machine learning in healthcare",
+    df=df,
+    methods=["semantic"],
+    semantic_threshold=0.75,
+    max_results=20
+)
 ```
 
 ### Command Line Options
 
 ```
-usage: bibtex-analyzer [-h] {analyze,visualize,dashboard} ...
+usage: bibtex-analyzer [-h] {analyze,visualize,search,dashboard} ...
 
 Bibtex Analyzer - Analyze and visualize BibTeX bibliographies
 
 positional arguments:
-  {analyze,visualize,dashboard}
-    analyze             Analyze a BibTeX file and generate tags
+  {analyze,visualize,search,dashboard}
+    analyze             Analyze a BibTeX or CSV file and generate tags
     visualize           Generate visualizations from tagged data
+    search              Search for papers by topic using semantic similarity
     dashboard           Launch interactive web dashboard
 
 options:
@@ -179,6 +212,33 @@ options:
                         Model to use for statistical methods (default: gpt-4)
 ```
 
+#### Search Command
+
+```
+usage: bibtex-analyzer search [-h] [-o OUTPUT]
+                              [--methods {exact,fuzzy,semantic} [{exact,fuzzy,semantic} ...]]
+                              [--semantic-threshold SEMANTIC_THRESHOLD]
+                              [--fuzzy-threshold FUZZY_THRESHOLD]
+                              [--max-results MAX_RESULTS]
+                              query input
+
+positional arguments:
+  query                 Search query (e.g., 'chronic fatigue syndrome')
+  input                 Input CSV file with paper data
+
+options:
+  -h, --help            show this help message and exit
+  -o, --output OUTPUT   Output CSV file for search results
+  --methods {exact,fuzzy,semantic} [{exact,fuzzy,semantic} ...]
+                        Search methods to use (default: all methods)
+  --semantic-threshold SEMANTIC_THRESHOLD
+                        Minimum similarity score for semantic search (0-1, default: 0.7)
+  --fuzzy-threshold FUZZY_THRESHOLD
+                        Minimum similarity score for fuzzy search (0-100, default: 80)
+  --max-results MAX_RESULTS
+                        Maximum number of results to return (default: 50)
+```
+
 ### Setting Up
 
 1. Install development dependencies:
@@ -210,65 +270,110 @@ options:
 
 ## Dashboard Features
 
-The interactive dashboard provides a user-friendly web interface for exploring your bibliography. Here's what you can do:
+The interactive dashboard provides a user-friendly web interface for exploring your bibliography with a clean, organized layout designed for efficient workflows.
 
-### 1. Upload & Process
-- Drag and drop your bibliography file (.bib or .csv) or click to browse
-- Upload your BibTeX or CSV file
-- Configure tag generation settings:
-  - Tag sample size
-  - Maximum entries to tag
-  - Model selection (GPT-3.5 Turbo or GPT-4)
-- Apply year filtering:
+## Dashboard Layout
+
+The dashboard features a **two-panel layout** with clearly separated functionality:
+
+### Left Panel: 📁 Import & Filter Bibliography
+**Data Management Hub** - Everything you need to import and prepare your data:
+
+- **File Upload**: Drag and drop your bibliography file (.bib or .csv) or click to browse
+- **Year Filtering**: 
   - Min Year: Filter entries from this year onwards
   - Max Year: Filter entries up to this year
-- Monitor processing progress with real-time logs
+- **Apply Filters**: Process your uploaded file with the selected year range
+- **Processing Logs**: Real-time progress monitoring with detailed logging
+- **Summary Information**: View statistics about your imported/filtered bibliography
 
-### 2. Word Cloud Customization
-- Adjust word cloud settings:
-  - Maximum number of words
-  - Color schemes (Viridis, Plasma, Inferno, Magma, Cividis, Rainbow)
-  - Background colors (White, Black, Light Gray, Dark)
-- Download word cloud as PNG or interactive HTML
+### Right Panel: Analysis & Search Tools
+**Two specialized tabs** for different analysis workflows:
 
-### 3. Data Table
-- View all entries with key information:
-  - Year
-  - Title
-  - Authors
-  - Journal
-  - DOI
-  - Abstract
-  - Volume
-  - Issue
-  - Pages
-  - Keywords
-- Filter entries by tags using a searchable dropdown
-- Download BibTeX file with two options:
-  - Download All Entries: Get the complete bibliography
-  - Download Filtered Entries: Only get entries matching your selected tags
-- Entries include all available metadata fields and generated keywords
+## Tab 1: 🔍 Interactive Search
+**Powerful semantic search independent of tag generation** - works immediately after uploading your bibliography:
 
+- **Natural Language Queries**: Search using plain English descriptions like "chronic fatigue syndrome" or "machine learning in healthcare"
+- **Multiple Search Methods**:
+  - **Exact Match**: Finds papers containing your exact keywords
+  - **Fuzzy Match**: Handles typos and variations in terminology
+  - **Semantic Match**: AI embeddings for topic similarity (fast)
+  - **🚀 Hybrid AI**: Combines embeddings + LLM analysis for best balance
+  - **🤖 LLM Only**: Premium quality - GPT analyzes ALL papers (expensive but thorough)
+- **Advanced Controls**:
+  - AI model selection (GPT-4o Mini, GPT-3.5 Turbo, GPT-4o, GPT-4 Turbo)
+  - Semantic similarity thresholds (0.1-1.0)
+  - Fuzzy matching thresholds (50-100%)
+  - LLM relevance thresholds (0-10)
+  - Maximum results limit (1-100)
+- **Search Results**: View results with relevance scores, search method breakdown, and paper details
+- **CSV Export**: Download search results with all metadata including publication_id and relevance scores
 
-### Visualization Options
-- **Word Cloud**: Generate beautiful word clouds from your paper tags
-  - Toggle between static (PNG) and interactive (HTML) versions
-  - Customize colors, size, and number of words
-  - Click on words to see related papers
-- **Tag Frequencies**: Bar chart showing most common tags
-  - Hover to see exact counts
-  - Click to filter papers by tag
+## Tab 2: 🏷️ AI Tags & Word Clouds
+**Complete tag generation and visualization workflow**:
 
-### Data Table
-- Sort and filter your bibliography
-- Search by title, author, or tags
-- View detailed paper information including abstract and tags
-- Export filtered results to CSV
+### Tag Generation Settings
+- **Tag Sample Size**: Number of entries to use for generating tag vocabulary (1-∞)
+- **Max Entries to Tag**: Limit entries to tag for faster processing (0 for all)
+- **Model Selection**: Choose between GPT-3.5 Turbo or GPT-4 for tag generation
+- **Process & Generate Tags**: Apply filters AND generate AI tags (required for visualizations)
 
-### Configuration
-- Adjust tag generation settings
-- Choose different OpenAI models
-- Customize visualization appearance
+### Word Cloud Customization (Collapsible)
+- **Maximum Words**: Control word cloud density (10-200 words)
+- **Color Schemes**: Viridis, Plasma, Inferno, Magma, Cividis, Rainbow
+- **Background Colors**: White, Black, Light Gray, Dark
+- **Word Cloud Type**: Static (PNG) or Interactive (HTML)
+- **Update Word Cloud**: Regenerate with new settings
+
+### 📊 Results & Visualizations (Nested Tabs)
+*Only available after tag generation - displays results of the tagging process:*
+
+#### Word Cloud Tab
+- **Interactive/Static Word Clouds**: Beautiful visualizations of your paper topics
+- **Clickable Words**: Click on any word to see related papers
+- **Download Options**: Save as PNG or interactive HTML
+- **Selected Word Display**: View papers associated with clicked words
+
+#### Tag Frequencies Tab
+- **Bar Chart Visualization**: Shows most common tags across your bibliography
+- **Interactive Elements**: Hover for exact counts, click to filter papers
+- **Download**: Export frequency data
+
+#### Data Table Tab
+- **Complete Bibliography View**: All entries with comprehensive metadata:
+  - Publication ID, Year, Title, Authors, Journal, DOI, Abstract
+  - Volume, Issue, Pages, Keywords, Generated Tags
+- **Advanced Filtering**: 
+  - Filter by generated tags using searchable multi-select dropdown
+  - View filtered subsets of your bibliography
+- **Download Options**:
+  - **Download All Entries**: Complete bibliography as BibTeX
+  - **Download Filtered Entries**: Only papers matching selected tag filters
+- **Rich Metadata**: All original fields plus AI-generated tags and keywords
+
+## Search vs. Tag Generation Workflows
+
+### 🔍 **Search Workflow** (Independent & Fast)
+1. Upload bibliography → 2. Use Search tab → 3. Get instant results
+- **When to use**: Quick topic discovery, finding specific papers, exploring content
+- **Speed**: Very fast - works immediately after upload
+- **Output**: Ranked search results with relevance scores
+
+### 🏷️ **Tag Generation Workflow** (Comprehensive & Slower)  
+1. Upload bibliography → 2. Apply filters → 3. Generate tags → 4. Explore visualizations
+- **When to use**: Deep analysis, topic modeling, creating word clouds, data exploration
+- **Speed**: Slower - requires AI processing time
+- **Output**: Tagged bibliography + visualizations + enhanced data table
+
+## Key Features Summary
+
+- **Dual Workflow Support**: Search immediately or generate tags for deep analysis
+- **Advanced AI Search**: 5 different search methods from exact keywords to premium LLM analysis
+- **Flexible Filtering**: Year-based filtering with easy controls
+- **Rich Visualizations**: Word clouds, frequency charts, and comprehensive data tables
+- **Export Everything**: Search results, visualizations, filtered bibliographies
+- **Progress Monitoring**: Real-time logs for all processing operations
+- **Responsive Design**: Clean, organized interface that scales to your screen size
 
 ## Supported File Formats
 
@@ -397,7 +502,28 @@ bibtex-analyzer analyze papers.bib \
 bibtex-analyzer visualize recent_papers.csv --wordcloud both
 ```
 
-### Example 3: CSV Analysis with Filtering
+### Example 3: Semantic Search for Topic Discovery
+
+```bash
+# Search for papers related to chronic fatigue syndrome
+bibtex-analyzer search "chronic fatigue syndrome" papers.csv \
+    --output cfs_papers.csv \
+    --methods exact fuzzy semantic \
+    --semantic-threshold 0.7 \
+    --max-results 20
+
+# Find papers about machine learning in healthcare using only semantic search
+bibtex-analyzer search "machine learning healthcare diagnosis" papers.csv \
+    --methods semantic \
+    --semantic-threshold 0.75
+
+# Search with fuzzy matching for typos
+bibtex-analyzer search "artifical inteligence" papers.csv \
+    --methods fuzzy \
+    --fuzzy-threshold 70
+```
+
+### Example 4: CSV Analysis with Filtering
 
 ```bash
 # Process a large CSV bibliography, filtering recent papers only
@@ -408,7 +534,7 @@ bibtex-analyzer analyze large_bibliography.csv \
     --subset-size 200
 ```
 
-### Example 4: Docker Deployment
+### Example 5: Docker Deployment
 
 You can also run the dashboard in a Docker container:
 
