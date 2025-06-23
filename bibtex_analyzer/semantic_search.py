@@ -11,7 +11,7 @@ import pickle
 import pandas as pd
 import numpy as np
 from openai import OpenAI
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
@@ -338,8 +338,11 @@ class SemanticSearcher:
         if logger:
             logger.log_info("Computing semantic similarities...")
         
-        # Calculate similarities
-        similarities = cosine_similarity([query_embedding], paper_embeddings)[0]
+        # Calculate similarities with numerical safety
+        with np.errstate(divide='ignore', invalid='ignore'):
+            similarities = cosine_similarity([query_embedding], paper_embeddings)[0]
+            # Replace any invalid values (NaN, inf) with 0
+            similarities = np.nan_to_num(similarities, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Filter by threshold and return results
         results = []

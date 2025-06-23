@@ -2284,6 +2284,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         file_path = upload_dir / filename
         logger = ProgressLogger(process_progress)
         
+        # Enable the interval immediately to show progress updates
+        # This will be updated by the interval callback
+        
         if not file_path.exists():
             error_msg = "Error: File not found"
             logs = logger.log_error(error_msg)
@@ -2466,13 +2469,17 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             
             log = update_log("Processing complete!")
             
+            # Mark processing as complete
+            process_progress.update(100, "Processing complete!", status='complete')
+            
             return (
                 df_json,
                 df_json,
                 100,
                 "Processing complete!",
                 dbc.Alert("File processed successfully!", color="success"),
-                log
+                log,
+                False  # Keep interval enabled briefly to show completion
             )
             
         except Exception as e:
@@ -2483,7 +2490,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 progress if 'progress' in locals() else 0,
                 f"Error: {str(e)}",
                 dbc.Alert(error_msg, color="danger"),
-                update_log(error_msg)
+                update_log(error_msg),
+                True  # Disable interval on error
             )
     
     @app.callback(
@@ -3376,7 +3384,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         [Output('process-progress', 'value', allow_duplicate=True),
          Output('process-progress-text', 'children', allow_duplicate=True),
          Output('processing-logs', 'children', allow_duplicate=True),
-         Output('process-interval', 'disabled')],
+         Output('process-interval', 'disabled', allow_duplicate=True)],
         [Input('process-interval', 'n_intervals')],
         prevent_initial_call=True
     )
@@ -3394,29 +3402,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             disable_interval
         )
     
-    # Callback to enable processing interval when filter button is clicked
-    @app.callback(
-        Output('process-interval', 'disabled', allow_duplicate=True),
-        [Input('filter-button', 'n_clicks')],
-        prevent_initial_call=True
-    )
-    def enable_process_interval_filter(n_clicks):
-        """Enable the processing interval when filter button is clicked."""
-        if n_clicks:
-            return False  # Enable interval
-        return True  # Keep disabled
-    
-    # Callback to enable processing interval when process button is clicked
-    @app.callback(
-        Output('process-interval', 'disabled', allow_duplicate=True),
-        [Input('process-button', 'n_clicks')],
-        prevent_initial_call=True
-    )
-    def enable_process_interval_process(n_clicks):
-        """Enable the processing interval when process button is clicked."""
-        if n_clicks:
-            return False  # Enable interval
-        return True  # Keep disabled
+    # Note: Interval enabling/disabling is handled by the main processing callbacks above
 
 
 def run_dashboard(debug: bool = False, port: int = 8050) -> None:
