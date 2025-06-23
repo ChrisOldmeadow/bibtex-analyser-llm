@@ -174,6 +174,11 @@ class SemanticSearcher:
             if logger:
                 progress = (i + len(batch)) / len(texts) * 100
                 logger.log_info(f"Embedding progress: {int(progress)}% complete")
+                # Update progress if logger has set_progress method
+                if hasattr(logger, 'set_progress'):
+                    # Map embedding progress to overall search progress (20-50%)
+                    search_progress = 20 + (progress * 0.3)  # 20% to 50%
+                    logger.set_progress(int(search_progress))
         
         if logger:
             logger.log_success(f"Embedding complete: {total_cached} from cache, {total_new} computed")
@@ -521,6 +526,12 @@ class HybridSemanticSearcher(SemanticSearcher):
         llm_calls = 0
         
         for i, paper in enumerate(papers):
+            # Update progress
+            if logger and hasattr(logger, 'set_progress'):
+                # Map LLM analysis progress (50-90% of overall search)
+                progress = (i / len(papers)) * 40 + 50  # 50% to 90%
+                logger.set_progress(int(progress))
+            
             # Prepare paper content for analysis
             title = paper.get('title', 'No title')
             abstract = paper.get('abstract', '')[:500]  # Limit to 500 chars for cost

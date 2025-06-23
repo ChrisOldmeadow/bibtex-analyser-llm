@@ -58,6 +58,11 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dcc.Store(id='wordcloud-store'),
         dcc.Store(id='wordcloud-html-store', data=None),
         dcc.Store(id='search-results-store'),
+        dcc.Store(id='search-progress-store', data={'progress': 0, 'logs': '', 'status': 'idle'}),
+        dcc.Store(id='process-progress-store', data={'progress': 0, 'logs': '', 'status': 'idle'}),
+        dcc.Store(id='upload-timestamp', data=None),  # Track upload time to force updates
+        dcc.Interval(id='search-interval', interval=500, disabled=True),  # Update every 500ms during search
+        dcc.Interval(id='process-interval', interval=500, disabled=True),  # Update every 500ms during processing
         dcc.Download(id="download-wordcloud"),
         dcc.Download(id="download-tagged-data"),
         dcc.Download(id="download-search-results"),
@@ -778,6 +783,76 @@ def create_logger(max_logs: int = 20) -> DashLogger:
         A logger object
     """
     return DashLogger(max_logs)
+
+class SearchProgressTracker:
+    """Thread-safe progress tracker for search operations."""
+    
+    def __init__(self):
+        """Initialize the progress tracker."""
+        import threading
+        self.lock = threading.Lock()
+        self.progress = 0
+        self.logs = []
+        self.status = 'idle'
+        self.max_logs = 30
+        
+    def update(self, progress: int, log_message: str = None, status: str = None):
+        """Update progress with thread safety."""
+        with self.lock:
+            self.progress = progress
+            if log_message:
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                self.logs.append(f"[{timestamp}] {log_message}")
+                # Keep only recent logs
+                if len(self.logs) > self.max_logs:
+                    self.logs = self.logs[-self.max_logs:]
+            if status:
+                self.status = status
+                
+    def get_state(self):
+        """Get current state with thread safety."""
+        with self.lock:
+            return {
+                'progress': self.progress,
+                'logs': '\n'.join(self.logs),
+                'status': self.status
+            }
+
+# Global progress trackers
+search_progress = SearchProgressTracker()
+process_progress = SearchProgressTracker()
+
+class ProgressLogger(DashLogger):
+    """Enhanced logger that updates the progress tracker."""
+    
+    def __init__(self, progress_tracker: SearchProgressTracker, max_logs: int = 20):
+        """Initialize with a progress tracker."""
+        super().__init__(max_logs)
+        self.progress_tracker = progress_tracker
+        self.current_progress = 0
+        
+    def log_info(self, message: str) -> str:
+        """Log info and update progress tracker."""
+        result = super().log_info(message)
+        self.progress_tracker.update(self.current_progress, message)
+        return result
+        
+    def log_success(self, message: str) -> str:
+        """Log success and update progress tracker."""
+        result = super().log_success(message)
+        self.progress_tracker.update(self.current_progress, message)
+        return result
+        
+    def log_error(self, message: str, error: Exception = None) -> str:
+        """Log error and update progress tracker."""
+        result = super().log_error(message, error)
+        self.progress_tracker.update(self.current_progress, message, status='error')
+        return result
+        
+    def set_progress(self, progress: int):
+        """Set the current progress value."""
+        self.current_progress = progress
+        self.progress_tracker.update(progress)
 
 def parse_tag_string(tag_string: str) -> List[str]:
     """Parse a comma-separated tag string into a list of cleaned tags.
@@ -2168,13 +2243,17 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         [Output('upload-filename', 'children'),
          Output('process-button', 'disabled'),
          Output('filter-button', 'disabled'),
-         Output('upload-status', 'children')],
+         Output('upload-status', 'children'),
+         Output('upload-timestamp', 'data')],
         [Input('upload-bibtex', 'contents')],
         [State('upload-bibtex', 'filename')]
     )
     def update_upload_status(contents, filename):
         """Update the upload status and enable/disable the process button."""
-        return handle_upload_status(contents, filename, upload_dir)
+        result = handle_upload_status(contents, filename, upload_dir)
+        # Add timestamp to force update of dependent callbacks
+        timestamp = datetime.now().isoformat() if contents else None
+        return result + (timestamp,)
     
     @app.callback(
         [Output('data-store', 'data'),
@@ -2182,7 +2261,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          Output('process-progress', 'value'),
          Output('process-progress', 'label'),
          Output('upload-status', 'children', allow_duplicate=True),
-         Output('processing-logs', 'children')],
+         Output('processing-logs', 'children'),
+         Output('process-interval', 'disabled', allow_duplicate=True)],
         [Input('process-button', 'n_clicks')],
         [State('upload-bibtex', 'filename'),
          State('tag-sample-size', 'value'),
@@ -2197,32 +2277,35 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         if n_clicks is None or not filename:
             raise PreventUpdate
             
-        file_path = upload_dir / filename
-        logs = []
+        # Reset and initialize progress tracker
+        process_progress.__init__()
+        process_progress.update(0, "Starting tag generation...", status='processing')
         
-        def update_log(message):
-            timestamp = datetime.now().strftime('%H:%M:%S')
-            log_entry = f"[{timestamp}] {message}"
-            logs.append(log_entry)
-            return "\n".join(logs[-20:])  # Keep last 20 log entries
+        file_path = upload_dir / filename
+        logger = ProgressLogger(process_progress)
         
         if not file_path.exists():
             error_msg = "Error: File not found"
+            logs = logger.log_error(error_msg)
+            process_progress.update(0, status='error')
             return (
                 no_update,
                 no_update,
                 0,
                 error_msg,
                 dbc.Alert(error_msg, color="danger"),
-                update_log(error_msg)
+                logs,
+                True  # Disable interval
             )
         
         try:
             # Process the BibTeX file
             try:
-                log = update_log(f"Starting processing of {filename}")
+                logs = logger.log_info(f"Starting processing of {filename}")
+                logger.set_progress(10)
                 entries = process_bibtex_file(file_path)
-                log = update_log(f"Found {len(entries)} entries in the file")
+                logger.set_progress(20)
+                logs = logger.log_info(f"Found {len(entries)} entries in the file")
                 
                 # Apply year filtering if specified
                 if min_year or max_year:
@@ -2489,21 +2572,29 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     @app.callback(
         [Output('bibliography-summary', 'children'),
          Output('summary-card', 'style')],
-        [Input('upload-bibtex', 'contents')],
+        [Input('upload-timestamp', 'data')],  # Trigger when upload timestamp changes
         [State('upload-bibtex', 'filename')],
         prevent_initial_call=True
     )
-    def update_bibliography_summary(contents, filename):
+    def update_bibliography_summary(upload_timestamp, filename):
         """Generate and display bibliography summary after file upload."""
-        if not contents or not filename:
+        # Check if upload was successful
+        if not upload_timestamp or not filename:
             return "Upload a file to see summary...", {"display": "none"}
         
         try:
             # Process the uploaded file to get basic info
             file_path = upload_dir / filename
             
+            # Add a small delay to ensure file is written
+            import time
+            time.sleep(0.1)
+            
             if not file_path.exists():
-                return "File not found", {"display": "none"}
+                # Try to list what files are in the directory
+                files_in_dir = list(upload_dir.glob("*"))
+                error_msg = f"File '{filename}' not found in uploads. Files in directory: {[f.name for f in files_in_dir]}"
+                return dbc.Alert(error_msg, color="warning"), {"display": "block"}
             
             # Process the file
             entries = process_bibtex_file(file_path)
@@ -2648,7 +2739,10 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     @app.callback(
         [Output('data-store', 'data', allow_duplicate=True),
          Output('upload-status', 'children', allow_duplicate=True),
-         Output('processing-logs', 'children', allow_duplicate=True)],
+         Output('processing-logs', 'children', allow_duplicate=True),
+         Output('process-interval', 'disabled', allow_duplicate=True),
+         Output('process-progress', 'value', allow_duplicate=True),
+         Output('process-progress-text', 'children', allow_duplicate=True)],
         [Input('filter-button', 'n_clicks')],
         [State('upload-bibtex', 'filename'),
          State('min-year', 'value'),
@@ -2660,28 +2754,43 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         if n_clicks is None or not filename:
             raise PreventUpdate
             
+        # Reset and initialize progress tracker
+        process_progress.__init__()
+        process_progress.update(0, "Starting file processing...", status='processing')
+        
         file_path = upload_dir / filename
-        logger = create_logger()
+        logger = ProgressLogger(process_progress)
+        
+        # Enable interval for real-time updates (will be returned in first callback response)
+        enable_interval = False
         
         logs = logger.log_info(f"Starting to filter {filename}")
+        logger.set_progress(10)
         
         if not file_path.exists():
             error_msg = "Error: File not found"
             logs = logger.log_error(error_msg)
+            process_progress.update(0, status='error')
             return (
                 no_update,
                 dbc.Alert(error_msg, color="danger"),
-                logs
+                logs,
+                True,  # Disable interval
+                0,
+                "Error"
             )
         
         try:
             # Process the file
             logs = logger.log_info(f"Reading {filename}...")
+            logger.set_progress(20)
             entries = process_bibtex_file(file_path)
+            logger.set_progress(40)
             logs = logger.log_info(f"Found {len(entries)} entries in the file")
             
             # Apply year filtering if specified
             if min_year or max_year:
+                logger.set_progress(50)
                 processor = BibtexProcessor()
                 processor.entries = entries
                 
@@ -2693,6 +2802,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     filters['max_year'] = max_year
                     logs = logger.log_info(f"Filtering entries up to year {max_year}")
                 
+                logger.set_progress(60)
                 original_count = len(entries)
                 entries = processor.filter_entries(**filters)
                 filtered_count = len(entries)
@@ -2705,16 +2815,23 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             if not entries:
                 error_msg = "Error: No entries found after filtering"
                 logs = logger.log_error(error_msg)
+                process_progress.update(0, status='error')
                 return (
                     no_update,
                     dbc.Alert(error_msg, color="danger"),
-                    logs
+                    logs,
+                    True,  # Disable interval
+                    0,
+                    "Error"
                 )
             
             # Convert to DataFrame
+            logger.set_progress(70)
             df = pd.DataFrame(entries)
+            logs = logger.log_info("Converting to DataFrame...")
             
             # Count entries with meaningful abstracts for search
+            logger.set_progress(80)
             abstract_count = 0
             searchable_count = 0
             if 'abstract' in df.columns:
@@ -2730,24 +2847,35 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 logs = logger.log_info(f"{abstract_count} entries have abstracts, {searchable_count} are searchable (50+ chars)")
             
             # Save the filtered data without tags
+            logger.set_progress(90)
+            logs = logger.log_info("Preparing data for analysis...")
             df_json = df.to_json(orient='split', date_format='iso')
             
             success_msg = f"Successfully filtered {len(df)} entries ({searchable_count} with searchable abstracts). Ready for search!"
             logs = logger.log_success(success_msg)
             
+            logger.set_progress(100)
+            process_progress.update(100, "Processing complete!", status='complete')
             return (
                 df_json,
                 dbc.Alert(success_msg, color="success"),
-                logs
+                logs,
+                True,  # Disable interval
+                100,
+                "Complete!"
             )
             
         except Exception as e:
             error_msg = f"Error during filtering: {str(e)}"
             logs = logger.log_error(error_msg, e)
+            process_progress.update(0, status='error')
             return (
                 no_update,
                 dbc.Alert(error_msg, color="danger"),
-                logs
+                logs,
+                True,  # Disable interval
+                0,
+                "Error"
             )
     
     # Search functionality callbacks
@@ -2779,7 +2907,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          Output('search-progress-text', 'children'),
          Output('search-logs', 'children'),
          Output('search-progress-card', 'style'),
-         Output('search-results-store', 'data')],
+         Output('search-results-store', 'data'),
+         Output('search-interval', 'disabled', allow_duplicate=True)],
         [Input('search-button', 'n_clicks')],
         [State('search-query', 'value'),
          State('search-methods', 'value'),
@@ -2795,10 +2924,14 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     def perform_search(n_clicks, query, methods, semantic_threshold, fuzzy_threshold, max_results, hybrid_model, llm_threshold, data, filename):
         """Perform semantic search on the loaded data with detailed logging."""
         if not n_clicks or not query:
-            return "", "", 0, "", "Ready to search...", {"display": "none"}, None
+            return "", "", 0, "", "Ready to search...", {"display": "none"}, None, True
         
-        # Initialize logger and progress
-        logger = create_logger()
+        # Reset and initialize progress tracker
+        search_progress.__init__()  # Reset the tracker
+        search_progress.update(0, "Starting search...", status='searching')
+        
+        # Initialize progress logger
+        logger = ProgressLogger(search_progress)
         progress = 0
         
         # Show progress card
@@ -2806,6 +2939,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         
         try:
             logs = logger.log_info(f"Starting search for: '{query}'")
+            logger.set_progress(5)
             
             # Get data - either from store or by processing file directly
             if data:
@@ -2821,6 +2955,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             else:
                 error_msg = "No data available for search"
                 logs = logger.log_error(error_msg)
+                search_progress.update(0, status='error')
                 return (
                     dbc.Alert(error_msg, color="danger"),
                     "",
@@ -2828,11 +2963,13 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     "Error",
                     logs,
                     progress_style,
-                    None
+                    None,
+                    True  # Disable interval
                 )
             
             # Update progress
             progress = 10
+            logger.set_progress(progress)
             
             # Initialize searcher based on methods
             try:
@@ -2848,6 +2985,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     if not api_key and 'semantic' in methods:
                         error_msg = "OpenAI API key required for semantic search. Please set OPENAI_API_KEY in your .env file."
                         logs = logger.log_error(error_msg)
+                        search_progress.update(0, status='error')
                         return (
                             dbc.Alert(error_msg, color="danger"),
                             "",
@@ -2855,13 +2993,15 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                             "Error",
                             logs,
                             progress_style,
-                            None
+                            None,
+                            True  # Disable interval
                         )
                     searcher = SemanticSearcher(api_key=api_key) if api_key else SemanticSearcher()
                     logs = logger.log_info("Initialized standard semantic searcher")
             except Exception as e:
                 error_msg = f"Failed to initialize searcher: {str(e)}"
                 logs = logger.log_error(error_msg)
+                search_progress.update(0, status='error')
                 return (
                     dbc.Alert(error_msg, color="danger"),
                     "",
@@ -2869,11 +3009,13 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     "Error",
                     logs,
                     progress_style,
-                    None
+                    None,
+                    True  # Disable interval
                 )
             
             # Update progress
             progress = 20
+            logger.set_progress(progress)
             
             # Perform search with logging
             logs = logger.log_info(f"Search methods: {', '.join(methods)}")
@@ -2969,9 +3111,11 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             
             # Update progress
             progress = 90
+            logger.set_progress(progress)
             
             if results.empty:
                 logs = logger.log_info("No results found with current settings")
+                search_progress.update(100, "No results found", status='complete')
                 return (
                     dbc.Alert(
                         f"No results found for '{query}' with the current settings. Try lowering the thresholds or using different search methods.",
@@ -2982,7 +3126,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     "Search complete - No results",
                     logs,
                     progress_style,
-                    None
+                    None,
+                    True  # Disable interval
                 )
             
             logs = logger.log_info(f"Formatting {len(results)} results for display...")
@@ -3070,7 +3215,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             
             # Complete progress
             progress = 100
+            logger.set_progress(progress)
             logs = logger.log_success(f"Search display ready! Showing {len(results)} results")
+            search_progress.update(100, "Search complete!", status='complete')
             
             # Store search results for download
             search_results_data = results.to_json(orient='split')
@@ -3100,7 +3247,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 "Search complete!",
                 logs,
                 progress_style,
-                search_results_data
+                search_results_data,
+                True  # Disable interval
             )
             
         except Exception as e:
@@ -3110,6 +3258,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             else:
                 logs = f"[ERROR] {error_msg}"
             
+            search_progress.update(0, status='error')
             return (
                 dbc.Alert(error_msg, color="danger"),
                 "",
@@ -3117,7 +3266,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 "Error occurred",
                 logs,
                 progress_style,
-                None
+                None,
+                True  # Disable interval
             )
 
     @app.callback(
@@ -3197,6 +3347,76 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         if n_clicks:
             return not is_open
         return is_open
+    
+    # Interval callback for updating search progress
+    @app.callback(
+        [Output('search-progress', 'value', allow_duplicate=True),
+         Output('search-progress-text', 'children', allow_duplicate=True),
+         Output('search-logs', 'children', allow_duplicate=True),
+         Output('search-interval', 'disabled')],
+        [Input('search-interval', 'n_intervals')],
+        prevent_initial_call=True
+    )
+    def update_search_progress_display(n_intervals):
+        """Update search progress display from the global tracker."""
+        state = search_progress.get_state()
+        
+        # Disable interval if search is complete or idle
+        disable_interval = state['status'] in ['idle', 'complete', 'error']
+        
+        return (
+            state['progress'],
+            f"Progress: {state['progress']}%",
+            state['logs'],
+            disable_interval
+        )
+    
+    # Interval callback for updating processing progress
+    @app.callback(
+        [Output('process-progress', 'value', allow_duplicate=True),
+         Output('process-progress-text', 'children', allow_duplicate=True),
+         Output('processing-logs', 'children', allow_duplicate=True),
+         Output('process-interval', 'disabled')],
+        [Input('process-interval', 'n_intervals')],
+        prevent_initial_call=True
+    )
+    def update_process_progress_display(n_intervals):
+        """Update processing progress display from the global tracker."""
+        state = process_progress.get_state()
+        
+        # Disable interval if processing is complete or idle
+        disable_interval = state['status'] in ['idle', 'complete', 'error']
+        
+        return (
+            state['progress'],
+            f"Progress: {state['progress']}%",
+            state['logs'],
+            disable_interval
+        )
+    
+    # Callback to enable processing interval when filter button is clicked
+    @app.callback(
+        Output('process-interval', 'disabled', allow_duplicate=True),
+        [Input('filter-button', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def enable_process_interval_filter(n_clicks):
+        """Enable the processing interval when filter button is clicked."""
+        if n_clicks:
+            return False  # Enable interval
+        return True  # Keep disabled
+    
+    # Callback to enable processing interval when process button is clicked
+    @app.callback(
+        Output('process-interval', 'disabled', allow_duplicate=True),
+        [Input('process-button', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def enable_process_interval_process(n_clicks):
+        """Enable the processing interval when process button is clicked."""
+        if n_clicks:
+            return False  # Enable interval
+        return True  # Keep disabled
 
 
 def run_dashboard(debug: bool = False, port: int = 8050) -> None:
