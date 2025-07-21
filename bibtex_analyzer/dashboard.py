@@ -1912,7 +1912,22 @@ def process_bibtex_entries(file_path: Path, logger: 'DashLogger') -> Tuple[Optio
             # Process CSV file
             logger.log_info("Parsing CSV entries...")
             try:
-                df = pd.read_csv(file_path)
+                # Try to read with different encodings
+                encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+                df = None
+                last_error = None
+                
+                for encoding in encodings:
+                    try:
+                        df = pd.read_csv(file_path, encoding=encoding)
+                        logger.log_info(f"Successfully read CSV with {encoding} encoding")
+                        break
+                    except UnicodeDecodeError as e:
+                        last_error = e
+                        continue
+                
+                if df is None:
+                    raise ValueError(f"Could not read CSV with any of the encodings {encodings}. Last error: {last_error}")
                 entries = df.to_dict('records')
                 
                 # Normalize entries to match expected format
@@ -1925,9 +1940,32 @@ def process_bibtex_entries(file_path: Path, logger: 'DashLogger') -> Tuple[Optio
                         else:
                             clean_entry[key.lower()] = ''
                     
+                    # Map common field variations to standard names
+                    field_mappings = {
+                        'output_title': 'title',
+                        'output_authors': 'author',
+                        'output_abstract': 'abstract',
+                        'publication_id': 'id',
+                        'reported_year': 'year',
+                        'article_journal': 'journal',
+                        'output_volume': 'volume',
+                        'article_issue': 'issue',
+                        'article_number': 'pages',
+                        'ref_doi': 'doi'
+                    }
+                    
+                    # Apply field mappings
+                    for old_field, new_field in field_mappings.items():
+                        if old_field in clean_entry and new_field not in clean_entry:
+                            clean_entry[new_field] = clean_entry[old_field]
+                    
                     # Ensure ID field exists
                     if 'id' not in clean_entry and 'ID' not in clean_entry:
-                        clean_entry['ID'] = f"entry_{i + 1}"
+                        # Check for publication_id as alternative
+                        if 'publication_id' in clean_entry:
+                            clean_entry['ID'] = clean_entry['publication_id']
+                        else:
+                            clean_entry['ID'] = f"entry_{i + 1}"
                     elif 'id' in clean_entry:
                         clean_entry['ID'] = clean_entry['id']
                     

@@ -1,0 +1,1 @@
+web: python -m bibtex_analyzer dashboard --port ${PORT:-8050}

@@ -34,7 +34,21 @@ class BibtexProcessor:
     def _load_csv_entries(self, file_path: str) -> List[Dict[str, Any]]:
         """Load entries from a CSV file with bibliography data."""
         try:
-            df = pd.read_csv(file_path)
+            # Try to read with different encodings
+            encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+            df = None
+            last_error = None
+            
+            for encoding in encodings:
+                try:
+                    df = pd.read_csv(file_path, encoding=encoding)
+                    break
+                except UnicodeDecodeError as e:
+                    last_error = e
+                    continue
+            
+            if df is None:
+                raise ValueError(f"Could not read CSV with any of the encodings {encodings}. Last error: {last_error}")
             
             # Convert DataFrame to list of dictionaries
             entries = df.to_dict('records')
@@ -50,10 +64,33 @@ class BibtexProcessor:
                     else:
                         clean_entry[key.lower()] = ''
                 
+                # Map common field variations to standard names
+                field_mappings = {
+                    'output_title': 'title',
+                    'output_authors': 'author',
+                    'output_abstract': 'abstract',
+                    'publication_id': 'id',
+                    'reported_year': 'year',
+                    'article_journal': 'journal',
+                    'output_volume': 'volume',
+                    'article_issue': 'issue',
+                    'article_number': 'pages',
+                    'ref_doi': 'doi'
+                }
+                
+                # Apply field mappings
+                for old_field, new_field in field_mappings.items():
+                    if old_field in clean_entry and new_field not in clean_entry:
+                        clean_entry[new_field] = clean_entry[old_field]
+                
                 # Ensure required fields exist
                 if 'id' not in clean_entry and 'ID' not in clean_entry:
-                    # Generate an ID if none exists
-                    clean_entry['ID'] = f"entry_{len(normalized_entries) + 1}"
+                    # Check for publication_id as alternative
+                    if 'publication_id' in clean_entry:
+                        clean_entry['ID'] = clean_entry['publication_id']
+                    else:
+                        # Generate an ID if none exists
+                        clean_entry['ID'] = f"entry_{len(normalized_entries) + 1}"
                 elif 'id' in clean_entry:
                     clean_entry['ID'] = clean_entry['id']
                 
@@ -80,13 +117,18 @@ class BibtexProcessor:
     def get_entry_by_id(self, entry_id: str) -> Optional[Dict[str, Any]]:
         """Get an entry by its ID."""
         for entry in self.entries:
-            if entry.get('ID') == entry_id:
+            # Check both uppercase and lowercase 'id' for backward compatibility
+            if entry.get('ID') == entry_id or entry.get('id') == entry_id:
                 return entry
         return None
 
     def filter_entries(self, **filters) -> List[Dict[str, Any]]:
         """Filter entries based on given criteria."""
         filtered = self.entries
+        
+        # Handle required_fields separately
+        required_fields = filters.pop('required_fields', None)
+        
         for key, value in filters.items():
             if key == 'min_year':
                 filtered = [e for e in filtered if self._extract_year(e.get('year', '')) >= value]
@@ -94,6 +136,11 @@ class BibtexProcessor:
                 filtered = [e for e in filtered if self._extract_year(e.get('year', '')) <= value]
             else:
                 filtered = [e for e in filtered if e.get(key) == value]
+        
+        # Filter by required fields if specified
+        if required_fields:
+            filtered = [e for e in filtered if all(field in e and e[field] for field in required_fields)]
+        
         return filtered
     
     def _extract_year(self, year_value: str) -> int:

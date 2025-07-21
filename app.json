@@ -1,0 +1,32 @@
+{
+  "name": "Bibtex Analyzer Dashboard",
+  "description": "Interactive dashboard for analyzing and visualizing BibTeX bibliographies using AI-powered tagging",
+  "repository": "https://github.com/ChrisOldmeadow/bibtex-analyser-llm",
+  "keywords": ["bibtex", "bibliography", "ai", "dashboard", "visualization", "semantic-search"],
+  "env": {
+    "OPENAI_API_KEY": {
+      "description": "OpenAI API key for AI-powered tag generation",
+      "required": true
+    },
+    "DEFAULT_MODEL": {
+      "description": "Default OpenAI model to use",
+      "value": "gpt-3.5-turbo"
+    },
+    "LOG_LEVEL": {
+      "description": "Logging level",
+      "value": "INFO"
+    }
+  },
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "stack": "heroku-22",
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}

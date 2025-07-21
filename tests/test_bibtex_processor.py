@@ -8,7 +8,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, mock_open
 
-from bibtex_analyzer.bibtex_processor import BibtexProcessor
+from bibtex_analyzer.bibtex_processor import BibtexProcessor, process_bibtex_file
 
 # Sample BibTeX content for testing
 SAMPLE_BIBTEX = """@article{key1,
@@ -139,13 +139,17 @@ def test_get_field_values():
 
 def test_process_bibtex_file():
     """Test the convenience function for processing a BibTeX file."""
-    with patch('builtins.open', mock_open(read_data=SAMPLE_BIBTEX)) as mock_file:
+    # Create actual test files instead of mocking to avoid issues
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.bib', delete=False) as bib_file:
+        bib_file.write(SAMPLE_BIBTEX)
+        bib_file.flush()
+        
         with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp:
             try:
                 output_path = tmp.name
                 
                 # Test processing and saving
-                entries = process_bibtex_file("dummy.bib", output_path)
+                entries = process_bibtex_file(bib_file.name, output_path)
                 
                 assert len(entries) == 2
                 assert os.path.exists(output_path)
@@ -161,3 +165,5 @@ def test_process_bibtex_file():
                 # Clean up
                 if os.path.exists(output_path):
                     os.unlink(output_path)
+                if os.path.exists(bib_file.name):
+                    os.unlink(bib_file.name)

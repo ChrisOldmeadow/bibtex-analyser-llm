@@ -25,18 +25,21 @@ scikit-learn>=0.24.0
 # For semantic search
 rapidfuzz>=3.0.0
 
-# For testing
-pytest>=6.0.0
-pytest-cov>=2.0.0
-pytest-mock>=3.0.0
+# Web server for Heroku
+gunicorn>=20.1.0
 
-# For code quality
-black>=21.0
-isort>=5.0.0
-flake8>=3.9.0
-mypy>=0.900
-pre-commit>=2.0.0
+# For testing (optional - remove for production)
+# pytest>=6.0.0
+# pytest-cov>=2.0.0
+# pytest-mock>=3.0.0
 
-# For documentation
-sphinx>=4.0.0
-sphinx-rtd-theme>=0.5.0
+# For code quality (optional - remove for production)
+# black>=21.0
+# isort>=5.0.0
+# flake8>=3.9.0
+# mypy>=0.900
+# pre-commit>=2.0.0
+
+# For documentation (optional - remove for production)
+# sphinx>=4.0.0
+# sphinx-rtd-theme>=0.5.0
