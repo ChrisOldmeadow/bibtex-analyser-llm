@@ -23,8 +23,10 @@ import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 
 from .bibtex_processor import process_bibtex_file, BibtexProcessor
+import bibtexparser
 from .tag_generator import TagGenerator
 from .semantic_search import SemanticSearcher, HybridSemanticSearcher
+from .staff_analyzer import StaffAnalyzer
 
 # Initialize the Dash app with Bootstrap theme
 def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
@@ -58,6 +60,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dcc.Store(id='wordcloud-store'),
         dcc.Store(id='wordcloud-html-store', data=None),
         dcc.Store(id='search-results-store'),
+        dcc.Store(id='staff-analysis-store'),
         dcc.Store(id='search-progress-store', data={'progress': 0, 'logs': '', 'status': 'idle'}),
         dcc.Store(id='process-progress-store', data={'progress': 0, 'logs': '', 'status': 'idle'}),
         dcc.Store(id='upload-timestamp', data=None),  # Track upload time to force updates
@@ -66,6 +69,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dcc.Download(id="download-wordcloud"),
         dcc.Download(id="download-tagged-data"),
         dcc.Download(id="download-search-results"),
+        dcc.Download(id="download-staff-analysis"),
         
         # Navigation bar
         dbc.NavbarSimple(
@@ -587,6 +591,9 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                     # Search Results Container
                     html.Div(id="search-results-container", className="mt-3"),
                     
+                    # Staff Analysis Container
+                    html.Div(id="staff-analysis-container", className="mt-4"),
+                    
                     # Status and Result Display
                     html.Div(id="search-status"),
                 ], width=12)
@@ -928,6 +935,127 @@ def extract_unique_tags(df: pd.DataFrame) -> set:
     # Get all tags and convert to a set to remove duplicates
     return set(get_tags_from_series(df['tags']))
 
+def create_staff_analysis_ui(staff_df: pd.DataFrame, query: str) -> html.Div:
+    """Create UI component for staff analysis results.
+    
+    Args:
+        staff_df: DataFrame with staff metrics
+        query: Search query used
+        
+    Returns:
+        Dash HTML component with staff analysis
+    """
+    if staff_df.empty:
+        return html.Div()
+    
+    # Create summary cards for top staff
+    top_staff = staff_df.head(10)
+    
+    staff_cards = []
+    for idx, row in top_staff.iterrows():
+        # Determine tier and badge color
+        tier = StaffAnalyzer().get_staff_tier(row.to_dict())
+        tier_colors = {
+            "Star Performer": "success",
+            "Rising Star": "info",
+            "Prolific Contributor": "warning",
+            "Developing Researcher": "secondary"
+        }
+        
+        # Create data quality indicator
+        completeness = row['avg_completeness']
+        if completeness >= 0.8:
+            quality_icon = "🟢"
+        elif completeness >= 0.4:
+            quality_icon = "🟡"
+        else:
+            quality_icon = "🔴"
+        
+        card = dbc.Card([
+            dbc.CardHeader([
+                html.Div([
+                    html.H6(f"#{row['rank']} - {row['staff_id']}", className="mb-0"),
+                    dbc.Badge(tier, color=tier_colors.get(tier, "secondary"), className="ms-2")
+                ], className="d-flex align-items-center")
+            ]),
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        html.P([
+                            html.Strong("Publications: "),
+                            f"{row['publication_count']}"
+                        ], className="mb-1"),
+                        html.P([
+                            html.Strong("Impact Score: "),
+                            f"{row['impact_score']:.3f}"
+                        ], className="mb-1"),
+                    ], width=6),
+                    dbc.Col([
+                        html.P([
+                            html.Strong("Avg Relevance: "),
+                            f"{row['avg_relevance']:.3f}"
+                        ], className="mb-1"),
+                        html.P([
+                            html.Strong("Total Citations: "),
+                            f"{int(row['total_citations']):,}"
+                        ], className="mb-1"),
+                    ], width=6),
+                ]),
+                html.Hr(className="my-2"),
+                html.Small([
+                    f"{quality_icon} Data Quality: {completeness:.0%} | ",
+                    f"Active Years: {row['year_range']}"
+                ], className="text-muted")
+            ])
+        ], className="mb-3")
+        
+        staff_cards.append(card)
+    
+    # Create the main component
+    return html.Div([
+        dbc.Card([
+            dbc.CardHeader([
+                html.H4(f"🎯 Staff Analysis for '{query}'", className="mb-0"),
+                html.Small(f"Found {len(staff_df)} staff members with matching publications", className="text-muted")
+            ]),
+            dbc.CardBody([
+                # Summary statistics
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Alert([
+                            html.H6("Top Performers", className="alert-heading"),
+                            html.P(f"{len(staff_df[staff_df['publication_count'] >= 5])} staff with 5+ publications", className="mb-0")
+                        ], color="success"),
+                    ], width=4),
+                    dbc.Col([
+                        dbc.Alert([
+                            html.H6("High Quality", className="alert-heading"),
+                            html.P(f"{len(staff_df[staff_df['avg_quality'] >= 0.6])} staff with quality score ≥0.6", className="mb-0")
+                        ], color="info"),
+                    ], width=4),
+                    dbc.Col([
+                        dbc.Alert([
+                            html.H6("Total Impact", className="alert-heading"),
+                            html.P(f"{int(staff_df['total_citations'].sum()):,} total citations", className="mb-0")
+                        ], color="primary"),
+                    ], width=4),
+                ]),
+                
+                # Top staff cards
+                html.H5("Top 10 Staff by Impact Score", className="mt-4 mb-3"),
+                html.Div(staff_cards),
+                
+                # Download button
+                dbc.Button(
+                    "📊 Download Staff Analysis CSV",
+                    id="download-staff-analysis-button",
+                    color="primary",
+                    className="mt-3"
+                ),
+            ])
+        ])
+    ])
+
 def create_paper_cards(papers: List[Dict], show_tags: bool = False, 
                      show_journal: bool = True, max_title_length: int = 100) -> List[dbc.Card]:
     """Create Dash cards for papers.
@@ -1242,8 +1370,8 @@ def handle_process_bibtex(n_clicks: Optional[int], filename: Optional[str],
         # Update progress
         progress = progress_callback(20)
         
-        # Process BibTeX entries
-        df, error_msg = process_bibtex_entries(file_path, logger)
+        # Process BibTeX entries with deduplication
+        df, error_msg, dedup_stats = process_bibtex_entries(file_path, logger, deduplicate=True)
         if error_msg:
             logs = logger.log_error(error_msg)
             return (
@@ -1273,8 +1401,12 @@ def handle_process_bibtex(n_clicks: Optional[int], filename: Optional[str],
         tagged_count = df['tags'].notna().sum()
         total_count = len(df)
         
-        # Create success message
-        status_msg = f"Successfully processed {total_count} entries, {tagged_count} with tags ({percentage}%)."
+        # Create success message with deduplication info
+        status_msg = f"Successfully processed {total_count} entries"
+        if dedup_stats and dedup_stats['duplicates_removed'] > 0:
+            status_msg += f" ({dedup_stats['total_entries']} original → {dedup_stats['unique_entries']} unique)"
+        status_msg += f", {tagged_count} with tags ({percentage}%)."
+        
         logs = logger.log_success(status_msg)
         alert = dbc.Alert(status_msg, color="success")
         
@@ -1780,7 +1912,7 @@ def handle_update_table_and_filter(df_json: Optional[str]) -> Tuple[Union[dash_t
     tag_options = [{'label': tag, 'value': tag} for tag in sorted(all_tags)]
     
     # Select only the available columns from our desired set
-    columns_to_show = ['year', 'title', 'authors', 'journal', 'publication_id', 'doi']
+    columns_to_show = ['year', 'title', 'authors', 'journal', 'publication_id', 'doi', 'staff_id', 'all_staff_ids']
     available_columns = []
     
     # Check for columns with case-insensitive matching
@@ -1806,6 +1938,12 @@ def handle_update_table_and_filter(df_json: Optional[str]) -> Tuple[Union[dash_t
     if 'authors' in df.columns:
         df['authors'] = df['authors'].apply(
             lambda x: ', '.join(x) if isinstance(x, list) else x
+        )
+    
+    # Format all_staff_ids for display
+    if 'all_staff_ids' in df.columns:
+        df['all_staff_ids'] = df['all_staff_ids'].apply(
+            lambda x: ', '.join(x) if isinstance(x, list) else str(x) if x else ''
         )
     
     df = df[available_columns]
@@ -1893,110 +2031,43 @@ def validate_file_exists(file_path: Path, logger: 'DashLogger') -> Optional[Tupl
         )
     return None
 
-def process_bibtex_entries(file_path: Path, logger: 'DashLogger') -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Process bibliography entries from a BibTeX or CSV file.
+def process_bibtex_entries(file_path: Path, logger: 'DashLogger', deduplicate: bool = True) -> Tuple[Optional[pd.DataFrame], Optional[str], Optional[Dict]]:
+    """Process bibliography entries from a BibTeX or CSV file with optional deduplication.
     
     Args:
         file_path: Path to the BibTeX or CSV file
         logger: Logger for tracking progress
+        deduplicate: Whether to deduplicate entries
         
     Returns:
-        DataFrame of bibliography entries and any error message
+        DataFrame of bibliography entries, any error message, and deduplication stats
     """
     try:
+        # Initialize processor
+        processor = BibtexProcessor()
+        
         # Detect file format and read accordingly
         file_ext = file_path.suffix.lower()
         logger.log_info(f"Reading {file_ext.upper().replace('.', '')} file: {file_path.name}")
         
-        if file_ext == '.csv':
-            # Process CSV file
-            logger.log_info("Parsing CSV entries...")
-            try:
-                # Try to read with different encodings
-                encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-                df = None
-                last_error = None
-                
-                for encoding in encodings:
-                    try:
-                        df = pd.read_csv(file_path, encoding=encoding)
-                        logger.log_info(f"Successfully read CSV with {encoding} encoding")
-                        break
-                    except UnicodeDecodeError as e:
-                        last_error = e
-                        continue
-                
-                if df is None:
-                    raise ValueError(f"Could not read CSV with any of the encodings {encodings}. Last error: {last_error}")
-                entries = df.to_dict('records')
-                
-                # Normalize entries to match expected format
-                normalized_entries = []
-                for i, entry in enumerate(entries):
-                    clean_entry = {}
-                    for key, value in entry.items():
-                        if pd.notna(value):
-                            clean_entry[key.lower()] = str(value)
-                        else:
-                            clean_entry[key.lower()] = ''
-                    
-                    # Map common field variations to standard names
-                    field_mappings = {
-                        'output_title': 'title',
-                        'output_authors': 'author',
-                        'output_abstract': 'abstract',
-                        'publication_id': 'id',
-                        'reported_year': 'year',
-                        'article_journal': 'journal',
-                        'output_volume': 'volume',
-                        'article_issue': 'issue',
-                        'article_number': 'pages',
-                        'ref_doi': 'doi'
-                    }
-                    
-                    # Apply field mappings
-                    for old_field, new_field in field_mappings.items():
-                        if old_field in clean_entry and new_field not in clean_entry:
-                            clean_entry[new_field] = clean_entry[old_field]
-                    
-                    # Ensure ID field exists
-                    if 'id' not in clean_entry and 'ID' not in clean_entry:
-                        # Check for publication_id as alternative
-                        if 'publication_id' in clean_entry:
-                            clean_entry['ID'] = clean_entry['publication_id']
-                        else:
-                            clean_entry['ID'] = f"entry_{i + 1}"
-                    elif 'id' in clean_entry:
-                        clean_entry['ID'] = clean_entry['id']
-                    
-                    normalized_entries.append(clean_entry)
-                
-                entries = normalized_entries
-                logger.log_info(f"Found {len(entries)} entries")
-            except Exception as e:
-                error_msg = "Failed to parse CSV"
-                logger.log_error(error_msg, e)
-                return None, error_msg
-        else:
-            # Process BibTeX file (default)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                bibtex_str = f.read()
-                
-            # Parse BibTeX data
-            logger.log_info("Parsing BibTeX entries...")
-            try:
-                bib_database = bibtexparser.loads(bibtex_str)
-                entries = bib_database.entries
-                logger.log_info(f"Found {len(entries)} entries")
-            except Exception as e:
-                error_msg = "Failed to parse BibTeX"
-                logger.log_error(error_msg, e)
-                return None, error_msg
+        # Use BibtexProcessor to load entries with deduplication
+        logger.log_info("Loading entries...")
+        entries = processor.load_entries(str(file_path), deduplicate=deduplicate)
+        
+        if deduplicate:
+            stats = processor.get_deduplication_stats()
+            logger.log_info(f"Deduplication complete: {stats['total_entries']} total entries → {stats['unique_entries']} unique entries")
+            logger.log_info(f"Removed {stats['duplicates_removed']} duplicates")
             
+            # Log staff contributor information if available
+            staff_count = len([e for e in entries if 'all_staff_ids' in e and len(e.get('all_staff_ids', [])) > 1])
+            if staff_count > 0:
+                logger.log_info(f"{staff_count} publications have multiple staff contributors")
+        
         if not entries:
             error_msg = f"No entries found in the {file_ext.upper().replace('.', '')} file"
             logger.log_error(error_msg)
-            return None, error_msg
+            return None, error_msg, None
             
         # Convert to DataFrame
         logger.log_info("Converting entries to DataFrame...")
@@ -2009,12 +2080,12 @@ def process_bibtex_entries(file_path: Path, logger: 'DashLogger') -> Tuple[Optio
             logger.log_info(f"Found {abstract_count} entries with abstracts")
         
         logger.log_success(f"Successfully processed {len(df)} entries")
-        return df, None
+        return df, None, processor.get_deduplication_stats() if deduplicate else None
         
     except Exception as e:
         error_msg = "Failed to process BibTeX file"
         logger.log_error(error_msg, e)
-        return None, error_msg
+        return None, error_msg, None
 
 def generate_and_assign_tags(df: pd.DataFrame, model: str, tag_sample_size: int, 
                            max_entries_to_tag: int, logger: 'DashLogger', 
@@ -2642,9 +2713,11 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 error_msg = f"File '{filename}' not found in uploads. Files in directory: {[f.name for f in files_in_dir]}"
                 return dbc.Alert(error_msg, color="warning"), {"display": "block"}
             
-            # Process the file
-            entries = process_bibtex_file(file_path)
+            # Process the file with deduplication
+            processor = BibtexProcessor()
+            entries = processor.load_entries(str(file_path), deduplicate=True)
             df = pd.DataFrame(entries)
+            dedup_stats = processor.get_deduplication_stats()
             
             # Calculate statistics
             total_entries = len(df)
@@ -2719,7 +2792,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 dbc.Row([
                     dbc.Col([
                         html.H6("📄 Total Entries", className="text-primary mb-1"),
-                        html.H4(f"{total_entries:,}", className="mb-0")
+                        html.H4(f"{total_entries:,}", className="mb-0"),
+                        html.Small(f"({dedup_stats['total_entries']:,} original)" if dedup_stats['duplicates_removed'] > 0 else "", 
+                                 className="text-muted")
                     ], width=4),
                     dbc.Col([
                         html.H6("📅 Year Range", className="text-primary mb-1"),
@@ -2770,7 +2845,20 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     f"Only papers with meaningful abstracts (50+ chars) can be effectively searched. " +
                     f"You have {has_abstract:,} papers ({has_abstract/total_entries*100:.1f}%) ready for semantic search. " +
                     (f"Consider using Publication Enricher to add missing abstracts." if has_abstract < total_entries * 0.8 else "Great abstract coverage!")
-                ], className="text-muted")
+                ], className="text-muted"),
+                
+                # Add deduplication info if relevant
+                html.Div([
+                    html.Hr(),
+                    html.H6("🔄 Deduplication Summary:", className="mb-2"),
+                    html.Div([
+                        dbc.Badge(f"{dedup_stats['duplicates_removed']:,} duplicates removed", 
+                                 color="info", className="me-2 mb-1"),
+                        dbc.Badge(f"{len([e for e in df.to_dict('records') if 'all_staff_ids' in e and len(e.get('all_staff_ids', [])) > 1]):,} papers with multiple contributors", 
+                                 color="secondary", className="me-2 mb-1"),
+                    ]),
+                    html.Small("Staff contributors tracked via NumberPlate/staff_id field", className="text-muted")
+                ], style={"display": "block" if dedup_stats['duplicates_removed'] > 0 else "none"})
             ]
             
             return summary_content, {"display": "block"}
@@ -2827,18 +2915,23 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             )
         
         try:
-            # Process the file
+            # Process the file with deduplication
             logs = logger.log_info(f"Reading {filename}...")
             logger.set_progress(20)
-            entries = process_bibtex_file(file_path)
+            processor = BibtexProcessor()
+            entries = processor.load_entries(str(file_path), deduplicate=True)
+            dedup_stats = processor.get_deduplication_stats()
             logger.set_progress(40)
-            logs = logger.log_info(f"Found {len(entries)} entries in the file")
+            
+            if dedup_stats['duplicates_removed'] > 0:
+                logs = logger.log_info(f"Found {dedup_stats['total_entries']} entries, deduplicated to {len(entries)} unique entries")
+            else:
+                logs = logger.log_info(f"Found {len(entries)} entries in the file")
             
             # Apply year filtering if specified
             if min_year or max_year:
                 logger.set_progress(50)
-                processor = BibtexProcessor()
-                processor.entries = entries
+                # Processor already has the entries loaded
                 
                 filters = {}
                 if min_year:
@@ -2954,7 +3047,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          Output('search-logs', 'children'),
          Output('search-progress-card', 'style'),
          Output('search-results-store', 'data'),
-         Output('search-interval', 'disabled', allow_duplicate=True)],
+         Output('search-interval', 'disabled', allow_duplicate=True),
+         Output('staff-analysis-store', 'data'),
+         Output('staff-analysis-container', 'children')],
         [Input('search-button', 'n_clicks')],
         [State('search-query', 'value'),
          State('search-methods', 'value'),
@@ -2970,7 +3065,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     def perform_search(n_clicks, query, methods, semantic_threshold, fuzzy_threshold, max_results, hybrid_model, llm_threshold, data, filename):
         """Perform semantic search on the loaded data with detailed logging."""
         if not n_clicks or not query:
-            return "", "", 0, "", "Ready to search...", {"display": "none"}, None, True
+            return "", "", 0, "", "Ready to search...", {"display": "none"}, None, True, None, ""
         
         # Reset and initialize progress tracker
         search_progress.__init__()  # Reset the tracker
@@ -2995,9 +3090,14 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 # Fallback: process file directly if no filtered data available
                 logs = logger.log_info(f"No processed data found, loading from file: {filename}")
                 file_path = upload_dir / filename
-                entries = process_bibtex_file(file_path)
+                processor = BibtexProcessor()
+                entries = processor.load_entries(str(file_path), deduplicate=True)
                 df = pd.DataFrame(entries)
-                logs = logger.log_info(f"Loaded {len(df)} papers from file")
+                dedup_stats = processor.get_deduplication_stats()
+                if dedup_stats['duplicates_removed'] > 0:
+                    logs = logger.log_info(f"Loaded {len(df)} unique papers from file (removed {dedup_stats['duplicates_removed']} duplicates)")
+                else:
+                    logs = logger.log_info(f"Loaded {len(df)} papers from file")
             else:
                 error_msg = "No data available for search"
                 logs = logger.log_error(error_msg)
@@ -3010,7 +3110,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     logs,
                     progress_style,
                     None,
-                    True  # Disable interval
+                    True,  # Disable interval
+                    None,  # Staff analysis data
+                    ""     # Staff analysis UI
                 )
             
             # Update progress
@@ -3056,7 +3158,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     logs,
                     progress_style,
                     None,
-                    True  # Disable interval
+                    True,  # Disable interval
+                    None,  # Staff analysis data
+                    ""     # Staff analysis UI
                 )
             
             # Update progress
@@ -3173,7 +3277,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     logs,
                     progress_style,
                     None,
-                    True  # Disable interval
+                    True,  # Disable interval
+                    None,  # Staff analysis data
+                    ""     # Staff analysis UI
                 )
             
             logs = logger.log_info(f"Formatting {len(results)} results for display...")
@@ -3237,6 +3343,11 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                             html.Strong("Authors: "), 
                             row.get('author', 'No author')
                         ], className="mb-2"),
+                        # Show staff contributors if available
+                        html.P([
+                            html.Strong("Staff Contributors: "),
+                            ', '.join(row.get('all_staff_ids', [row.get('staff_id', '')])) if row.get('all_staff_ids') or row.get('staff_id') else 'Not specified'
+                        ], className="mb-2") if row.get('all_staff_ids') or row.get('staff_id') else None,
                         html.P([
                             html.Strong("Year: "), 
                             str(row.get('year', 'No year'))
@@ -3249,6 +3360,15 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                             html.Strong("Journal: "), 
                             row.get('journal', 'No journal')
                         ], className="mb-2") if row.get('journal') else None,
+                        html.P([
+                            html.Strong("DOI: "),
+                            html.A(
+                                row.get('doi', ''),
+                                href=f"https://doi.org/{row.get('doi', '')}",
+                                target="_blank",
+                                className="text-primary"
+                            ) if row.get('doi') else 'No DOI'
+                        ], className="mb-2") if row.get('doi') else None,
                         html.P([
                             html.Strong("Abstract: "), 
                             (row.get('abstract', '')[:300] + '...' if len(str(row.get('abstract', ''))) > 300 else row.get('abstract', 'No abstract'))
@@ -3263,6 +3383,18 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             progress = 100
             logger.set_progress(progress)
             logs = logger.log_success(f"Search display ready! Showing {len(results)} results")
+            
+            # Perform staff analysis
+            logs = logger.log_info("Analyzing staff contributions...")
+            staff_analyzer = StaffAnalyzer()
+            staff_df = staff_analyzer.aggregate_staff_metrics(results, min_completeness=0.0)
+            
+            # Create staff analysis UI
+            staff_ui = create_staff_analysis_ui(staff_df, query)
+            
+            # Convert staff data to JSON for storage
+            staff_data = staff_df.to_json(orient='split') if not staff_df.empty else None
+            
             search_progress.update(100, "Search complete!", status='complete')
             
             # Store search results for download
@@ -3294,7 +3426,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 logs,
                 progress_style,
                 search_results_data,
-                True  # Disable interval
+                True,  # Disable interval
+                staff_data,  # Staff analysis data
+                staff_ui     # Staff analysis UI
             )
             
         except Exception as e:
@@ -3313,7 +3447,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 logs,
                 progress_style,
                 None,
-                True  # Disable interval
+                True,  # Disable interval
+                None,  # Staff analysis data
+                ""     # Staff analysis UI
             )
 
     @app.callback(
@@ -3341,7 +3477,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             # Define desired columns in order
             desired_columns = [
                 'publication_id', 'title', 'year', 'author', 'journal', 
-                'doi', 'abstract', 'search_score', 'tags'
+                'doi', 'abstract', 'search_score', 'tags', 'staff_id', 'all_staff_ids'
             ]
             
             # Add columns that exist in the dataframe
@@ -3382,6 +3518,36 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             # So we'll just prevent the update
             raise PreventUpdate
 
+    @app.callback(
+        Output('download-staff-analysis', 'data'),
+        [Input('download-staff-analysis-button', 'n_clicks')],
+        [State('staff-analysis-store', 'data'),
+         State('search-query', 'value')],
+        prevent_initial_call=True
+    )
+    def download_staff_analysis_csv(n_clicks, staff_data, query):
+        """Download staff analysis as CSV file."""
+        if not n_clicks or not staff_data:
+            raise PreventUpdate
+        
+        try:
+            # Load staff analysis from store
+            staff_df = pd.read_json(staff_data, orient='split')
+            
+            if staff_df.empty:
+                raise PreventUpdate
+            
+            # Clean query for filename
+            clean_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+            clean_query = clean_query.replace(' ', '_')[:30]
+            
+            filename = f"staff_analysis_{clean_query}_{len(staff_df)}staff.csv"
+            
+            return dcc.send_data_frame(staff_df.to_csv, filename=filename, index=False)
+            
+        except Exception as e:
+            raise PreventUpdate
+    
     @app.callback(
         Output('wordcloud-collapse', 'is_open'),
         [Input('wordcloud-toggle', 'n_clicks')],

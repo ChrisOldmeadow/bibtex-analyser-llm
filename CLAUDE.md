@@ -11,7 +11,7 @@ Bibtex Analyzer GPT is a tool for analyzing and visualizing bibliographies using
 ### Main Components
 
 - **CLI Interface** (`__main__.py`): Entry point providing `analyze`, `visualize`, and `dashboard` commands
-- **BibtexProcessor** (`bibtex_processor.py`): Handles file format detection, parsing (BibTeX/CSV), and year filtering with smart year extraction
+- **BibtexProcessor** (`bibtex_processor.py`): Handles file format detection, parsing (BibTeX/CSV), year filtering with smart year extraction, and automatic deduplication
 - **TagGenerator** (`tag_generator.py`): Integrates with OpenAI API for AI-powered tag generation from abstracts
 - **Dashboard** (`dashboard.py`): Dash web application for interactive analysis with file upload, real-time processing, and visualization controls
 - **Visualization** (`visualization/`): Multiple visualization backends (matplotlib, plotly) for word clouds and network graphs
@@ -19,9 +19,10 @@ Bibtex Analyzer GPT is a tool for analyzing and visualizing bibliographies using
 ### Data Flow
 
 1. **Input Processing**: Multi-format files (BibTeX/CSV) → `BibtexProcessor` → normalized entry dictionaries
-2. **Filtering**: Year-based filtering using intelligent year extraction (handles formats like "2023", "c2023", "2023-01-01")
-3. **AI Analysis**: Abstracts → `TagGenerator` → OpenAI API → topic tags
-4. **Visualization**: Tagged data → various visualization modules → interactive/static outputs
+2. **Deduplication**: Automatic detection of duplicates by DOI/title → preserves all contributor information → unique entries only
+3. **Filtering**: Year-based filtering using intelligent year extraction (handles formats like "2023", "c2023", "2023-01-01")
+4. **AI Analysis**: Abstracts → `TagGenerator` → OpenAI API → topic tags (only unique entries are tagged)
+5. **Visualization**: Tagged data → various visualization modules → interactive/static outputs
 
 ### Key Design Patterns
 
@@ -90,7 +91,16 @@ python -c "from bibtex_analyzer import process_bibtex_file; print(process_bibtex
 ### File Format Support
 - **BibTeX**: Uses `bibtexparser` library, handles standard BibTeX fields
 - **CSV**: Automatic format detection, requires `title`, `author`, `abstract` columns, auto-generates IDs if missing
+- **Field Mapping**: Automatically maps common variations (e.g., `Output_Title` → `title`, `NumberPlate` → `staff_id`)
+- **Encoding Support**: Handles multiple encodings (UTF-8, Latin-1, CP1252, ISO-8859-1) for CSV files with special characters
 - **Year Filtering**: Smart extraction supports various formats, validates years (1000-2100), filters before tag generation
+
+### Deduplication & Staff Tracking
+- **Automatic Deduplication**: Detects duplicates by DOI (primary) or normalized title (secondary)
+- **Staff Contributor Tracking**: Preserves all `NumberPlate`/`staff_id` values from duplicates in `all_staff_ids` array
+- **Efficiency**: Only unique publications are sent for AI tagging, reducing API costs
+- **Mapping**: Each publication maintains a complete list of contributing staff members
+- **Statistics**: Dashboard shows deduplication counts and multi-contributor publication counts
 
 ### Dashboard Architecture
 - **Dash App**: Multi-page layout with Bootstrap components
@@ -110,6 +120,7 @@ python -c "from bibtex_analyzer import process_bibtex_file; print(process_bibtex
 - **Integration Tests**: End-to-end testing of CLI commands and file processing
 - **Mock Objects**: OpenAI API responses mocked for reliable testing
 - **Temporary Files**: Uses pytest's `tmp_path` for file I/O testing
+- **Deduplication Tests**: Comprehensive tests for duplicate detection, staff tracking, and field preservation
 
 ## Related Projects
 

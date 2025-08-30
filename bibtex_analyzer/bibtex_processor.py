@@ -1,12 +1,19 @@
 import bibtexparser
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
 import pandas as pd
 import os
+from collections import defaultdict
 
 class BibtexProcessor:
     def __init__(self):
         self.entries = []
+        self.deduplication_stats = {
+            'total_entries': 0,
+            'unique_entries': 0,
+            'duplicates_removed': 0,
+            'staff_contributors': defaultdict(list)
+        }
     
     def _detect_file_format(self, file_path: str) -> str:
         """Detect the file format based on extension and content."""
@@ -75,7 +82,9 @@ class BibtexProcessor:
                     'output_volume': 'volume',
                     'article_issue': 'issue',
                     'article_number': 'pages',
-                    'ref_doi': 'doi'
+                    'ref_doi': 'doi',
+                    'numberplate': 'staff_id',
+                    'number_plate': 'staff_id'
                 }
                 
                 # Apply field mappings
@@ -100,9 +109,112 @@ class BibtexProcessor:
             
         except Exception as e:
             raise ValueError(f"Error reading CSV file: {str(e)}")
+    
+    def deduplicate_entries(self, entries: List[Dict[str, Any]], preserve_staff: bool = True) -> List[Dict[str, Any]]:
+        """
+        Deduplicate entries based on DOI or title similarity.
+        
+        Args:
+            entries: List of bibliography entries
+            preserve_staff: Whether to preserve staff contributor information
+            
+        Returns:
+            List of unique entries with staff information preserved
+        """
+        # Reset stats
+        self.deduplication_stats = {
+            'total_entries': len(entries),
+            'unique_entries': 0,
+            'duplicates_removed': 0,
+            'staff_contributors': defaultdict(list)
+        }
+        
+        # Group entries by potential duplicates
+        unique_entries = {}
+        doi_to_id = {}  # Track DOI to entry ID mapping
+        title_to_id = {}  # Track normalized title to entry ID mapping
+        
+        for entry in entries:
+            # Generate a unique key for this entry
+            doi = entry.get('doi', '').strip().lower()
+            title = entry.get('title', '').strip().lower()
+            
+            # Normalize title for comparison (remove common variations)
+            normalized_title = ''.join(c for c in title if c.isalnum() or c.isspace())
+            normalized_title = ' '.join(normalized_title.split())  # Normalize whitespace
+            
+            # Determine if this is a duplicate
+            is_duplicate = False
+            master_id = None
+            
+            # Check by DOI first (most reliable)
+            if doi and doi in doi_to_id:
+                is_duplicate = True
+                master_id = doi_to_id[doi]
+            # Then check by normalized title
+            elif normalized_title and normalized_title in title_to_id:
+                is_duplicate = True
+                master_id = title_to_id[normalized_title]
+            
+            if is_duplicate and master_id:
+                # This is a duplicate - merge information
+                master_entry = unique_entries[master_id]
+                
+                # Preserve staff information if available
+                if preserve_staff and 'staff_id' in entry and entry['staff_id']:
+                    staff_ids = master_entry.get('all_staff_ids', [])
+                    if not staff_ids:
+                        # Initialize with the master entry's staff ID
+                        if 'staff_id' in master_entry and master_entry['staff_id']:
+                            staff_ids = [master_entry['staff_id']]
+                        else:
+                            staff_ids = []
+                    
+                    # Add this entry's staff ID if not already present
+                    if entry['staff_id'] not in staff_ids:
+                        staff_ids.append(entry['staff_id'])
+                    
+                    master_entry['all_staff_ids'] = staff_ids
+                    
+                    # Track staff contributors for stats
+                    self.deduplication_stats['staff_contributors'][master_id] = staff_ids
+                
+                # Merge other fields if they're missing in master
+                for field, value in entry.items():
+                    if field not in master_entry or not master_entry[field]:
+                        master_entry[field] = value
+                
+                self.deduplication_stats['duplicates_removed'] += 1
+            else:
+                # This is a unique entry
+                entry_id = entry.get('ID', entry.get('id', f"entry_{len(unique_entries) + 1}"))
+                unique_entries[entry_id] = entry.copy()
+                
+                # Initialize staff tracking
+                if preserve_staff and 'staff_id' in entry and entry['staff_id']:
+                    unique_entries[entry_id]['all_staff_ids'] = [entry['staff_id']]
+                    self.deduplication_stats['staff_contributors'][entry_id] = [entry['staff_id']]
+                
+                # Update lookup tables
+                if doi:
+                    doi_to_id[doi] = entry_id
+                if normalized_title:
+                    title_to_id[normalized_title] = entry_id
+        
+        self.deduplication_stats['unique_entries'] = len(unique_entries)
+        
+        return list(unique_entries.values())
 
-    def load_entries(self, file_path: str) -> List[Dict[str, Any]]:
-        """Load entries from a BibTeX or CSV file."""
+    def load_entries(self, file_path: str, deduplicate: bool = False) -> List[Dict[str, Any]]:
+        """Load entries from a BibTeX or CSV file with optional deduplication.
+        
+        Args:
+            file_path: Path to the input file
+            deduplicate: Whether to deduplicate entries based on DOI/title
+            
+        Returns:
+            List of entries (deduplicated if requested)
+        """
         file_format = self._detect_file_format(file_path)
         
         if file_format == 'csv':
@@ -111,6 +223,10 @@ class BibtexProcessor:
             with open(file_path, 'r', encoding='utf-8') as bibtex_file:
                 bib_database = bibtexparser.load(bibtex_file)
                 self.entries = bib_database.entries
+        
+        # Apply deduplication if requested
+        if deduplicate:
+            self.entries = self.deduplicate_entries(self.entries)
         
         return self.entries
 
@@ -182,6 +298,10 @@ class BibtexProcessor:
         """Get all values for a specific field."""
         values = [entry.get(field) for entry in self.entries if field in entry]
         return list(set(values)) if unique else values
+    
+    def get_deduplication_stats(self) -> Dict[str, Any]:
+        """Get statistics about the deduplication process."""
+        return dict(self.deduplication_stats)
 
 def process_bibtex_file(input_file: str, output_file: Optional[str] = None) -> List[Dict[str, Any]]:
     """
