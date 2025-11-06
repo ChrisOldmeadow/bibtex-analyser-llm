@@ -28,6 +28,7 @@ A powerful tool for analyzing and visualizing BibTeX and CSV bibliographies usin
   - Semantic search interface for topic discovery
   - Export functionality
   - Customizable visualization options
+- **Staff Insights**: Automatically deduplicates matched staff, ranks them via an impact score, surfaces the top 10 in the dashboard, and lets you download the full contributor table for offline analysis.
 
 ## Installation
 
@@ -300,12 +301,13 @@ The dashboard features a **two-panel layout** with clearly separated functionali
   - **Semantic Match**: AI embeddings for topic similarity (fast)
   - **🚀 Hybrid AI**: Combines embeddings + LLM analysis for best balance
   - **🤖 LLM Only**: Premium quality - GPT analyzes ALL papers (expensive but thorough)
+- **Layered Pipeline**: Every search builds the result set in stages—exact → fuzzy → semantic populate the candidate pool, hybrid optionally reranks those hits with GPT scoring, and LLM-only can score the entire library when you need exhaustive review.
 - **Advanced Controls**:
   - AI model selection (GPT-4o Mini, GPT-3.5 Turbo, GPT-4o, GPT-4 Turbo)
   - Semantic similarity thresholds (0.1-1.0)
   - Fuzzy matching thresholds (50-100%)
   - LLM relevance thresholds (0-10)
-  - Maximum results limit (1-100)
+  - Maximum results limit (optional UI-only cap; CSV downloads always contain every deduplicated match)
 - **Search Results**: View results with relevance scores, search method breakdown, and paper details
 - **CSV Export**: Download search results with all metadata including publication_id and relevance scores
 
@@ -364,6 +366,13 @@ The dashboard features a **two-panel layout** with clearly separated functionali
 - **When to use**: Deep analysis, topic modeling, creating word clouds, data exploration
 - **Speed**: Slower - requires AI processing time
 - **Output**: Tagged bibliography + visualizations + enhanced data table
+
+### Layered Search & Staff Insights
+
+- **Stepwise ranking**: Exact, fuzzy, and semantic passes build a deduplicated candidate pool. Hybrid mode reranks those matches with GPT relevance/confidence, and LLM-only mode can analyze every paper when you need exhaustive scoring.
+- **Transparent limits**: The optional *Max Results* field only caps how many cards are shown per page; CSV exports always include the full deduplicated result set plus all method scores.
+- **Summary metrics**: Each run renders a “Results Summary” card with total matches, method breakdown, selected search modes, and staff stats (count + average publications per staff).
+- **Staff leaderboard**: The dashboard ranks staff by an impact score (log-scaled publication count + relevance + quality + citations) and highlights the top 10 with quick links. The download button exports every contributor, and the modal buttons open only the publications that matched your current search.
 
 ## Key Features Summary
 
@@ -471,6 +480,19 @@ DEBUG=False                  # Run in debug mode
 ### Customizing Tag Generation
 
 You can customize the tag generation prompt by creating a `prompts` directory in your project root and adding a `tag_generation.md` file with your custom prompt. The default prompt includes instructions for generating relevant, specific tags for academic papers.
+
+## Linking Staff Results to the HMRI Affiliate Index
+
+If you maintain the `HMRI affiliate index.csv` file in the project root, you can merge dashboard staff downloads with the official roster using the helper script:
+
+```bash
+# Export the staff summary from the dashboard, then run:
+python link_staff_affiliates.py staff_summary.csv \
+    --index "HMRI affiliate index.csv" \
+    --output staff_summary_with_names.csv
+```
+
+The script performs a right join on `staff_id` (NumberPlate), adds first/last name plus faculty/school columns, and writes a single row per staff member. Omit `--output` to generate `<original>_with_names.csv` alongside your download.
 
 ## Examples
 
