@@ -28,7 +28,7 @@ A powerful tool for analyzing and visualizing BibTeX and CSV bibliographies usin
   - Semantic search interface for topic discovery
   - Export functionality
   - Customizable visualization options
-- **Staff Insights**: Automatically deduplicates matched staff, ranks them via an impact score, surfaces the top 10 in the dashboard, and lets you download the full contributor table for offline analysis.
+- **Staff Insights**: Automatically deduplicates matched staff, ranks them via an impact score, surfaces the top 10 in the dashboard, and optionally generates GPT-powered blurbs explaining how each researcher relates to the active search term.
 
 ## Installation
 
@@ -373,6 +373,7 @@ The dashboard features a **two-panel layout** with clearly separated functionali
 - **Transparent limits**: The optional *Max Results* field only caps how many cards are shown per page; CSV exports always include the full deduplicated result set plus all method scores.
 - **Summary metrics**: Each run renders a “Results Summary” card with total matches, method breakdown, selected search modes, and staff stats (count + average publications per staff).
 - **Staff leaderboard**: The dashboard ranks staff by an impact score (log-scaled publication count + relevance + quality + citations) and highlights the top 10 with quick links. The download button exports every contributor, and the modal buttons open only the publications that matched your current search.
+- **LLM narratives**: After reviewing the leaderboard, click “Generate LLM Staff Summaries” to have GPT craft short overviews for the top 10 researchers. The blurbs incorporate each staff member’s lead/senior authorship share, international collaboration rate, and clinical-trial involvement; they appear under each card and land in the staff summary download alongside the focus keywords.
 
 ## Key Features Summary
 
@@ -493,6 +494,8 @@ python link_staff_affiliates.py staff_summary.csv \
 ```
 
 The script performs a right join on `staff_id` (NumberPlate), adds first/last name plus faculty/school columns, and writes a single row per staff member. Omit `--output` to generate `<original>_with_names.csv` alongside your download.
+
+> Tip: the exported staff summary already contains the `llm_summary` and `llm_focus_topics` columns once you generate the LLM blurbs in the dashboard, so the merged file keeps both the narrative and the official name information.
 
 ## Examples
 
