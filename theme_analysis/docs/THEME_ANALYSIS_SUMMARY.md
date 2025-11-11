@@ -15,7 +15,7 @@ A **complete, standalone module** for strategic research theme analysis, indepen
 ## Key Features
 
 ✅ **SCImago-style institutional scoring** (0-100 scale)
-- Research performance (65%): Output (normalized to 250 pubs), Q1%, citations, excellence, leadership, OA
+- Research performance (65%): Output (normalized to ~90th percentile of publication counts), Q1%, citations, excellence, leadership, OA
 - Societal impact (35%): Altmetric coverage (with average score reported for context)
 
 ✅ **Field normalization**

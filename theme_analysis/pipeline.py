@@ -36,6 +36,7 @@ class ThemeSearchPipeline:
         semantic_only: bool = False,
         prompt_on_overflow: bool = False,
         ignore_max_limits: bool = False,
+        global_semantic_threshold: Optional[float] = None,
     ):
         """Initialize theme search pipeline.
 
@@ -50,13 +51,14 @@ class ThemeSearchPipeline:
         """
         self.df = df
         self.baselines = baselines
-        self.scorer = ThemeScorer(baselines)
+        self.scorer = ThemeScorer(baselines, global_semantic_threshold)
         self.max_candidates = max_candidates
         self._max_candidates_override = max_candidates
         self._has_candidate_override = max_candidates is not None
         self.semantic_only = semantic_only
         self.prompt_on_overflow = prompt_on_overflow
         self.ignore_max_limits = ignore_max_limits
+        self.global_semantic_threshold = global_semantic_threshold
 
         # Initialize hybrid searcher
         self.searcher = HybridSemanticSearcher(api_key=api_key)
@@ -100,7 +102,7 @@ class ThemeSearchPipeline:
         theme_semantic_only = theme.get('semantic_only', self.semantic_only)
         prompt_on_overflow = theme.get('prompt_on_overflow', False) or self.prompt_on_overflow
         min_relevance = theme.get('min_llm_relevance', 6.0)
-        semantic_threshold = theme.get('semantic_threshold', 0.5)
+        semantic_threshold = self.global_semantic_threshold if self.global_semantic_threshold is not None else theme.get('semantic_threshold', 0.5)
 
         # Candidate cap
         if self._has_candidate_override:
@@ -300,6 +302,89 @@ class ThemeSearchPipeline:
             'avg_hybrid_score', 'max_hybrid_score'
         ]
 
+        # Additional quality metrics per staff
+        def _is_q1(row):
+            quartile = row.get('Clarivate_Quartile_Rank')
+            if pd.isna(quartile):
+                quartile = row.get('SJR_Best_Quartile')
+            if pd.isna(quartile):
+                quartile = row.get('clarivate_quartile_rank')
+            if pd.isna(quartile):
+                quartile = row.get('sjr_best_quartile')
+            if pd.isna(quartile):
+                return 0
+            return 1 if str(quartile).strip().upper() == 'Q1' else 0
+
+        def _is_lead(row):
+            first = row.get('First_Author')
+            if first is None:
+                first = row.get('first_author')
+            last = row.get('Last_Author')
+            if last is None:
+                last = row.get('last_author')
+            true_vals = {True, 1, '1', 'true', 'True', 'TRUE', 'Y', 'y'}
+            return 1 if (first in true_vals) or (last in true_vals) else 0
+
+        def _is_oa(row):
+            pmc_id = row.get('Ref_PMC_ID')
+            if pmc_id is None:
+                pmc_id = row.get('ref_pmc_id')
+            openalex_is_oa = row.get('openalex_is_oa')
+            if pd.notna(pmc_id) and str(pmc_id).strip():
+                return 1
+            if openalex_is_oa is not None:
+                if isinstance(openalex_is_oa, str):
+                    if openalex_is_oa.strip().lower() in {'true', '1', 'yes', 'y'}:
+                        return 1
+                elif bool(openalex_is_oa):
+                    return 1
+            return 0
+
+        altmetric_col = None
+        for candidate in ['Altmetrics_Score', 'altmetrics_score']:
+            if candidate in staff_papers.columns:
+                altmetric_col = candidate
+                break
+
+        staff_metrics = staff_papers.copy()
+        staff_metrics['_q1_flag'] = staff_metrics.apply(_is_q1, axis=1)
+        staff_metrics['_lead_flag'] = staff_metrics.apply(_is_lead, axis=1)
+        staff_metrics['_oa_flag'] = staff_metrics.apply(_is_oa, axis=1)
+        if altmetric_col:
+            staff_metrics['_alt_score'] = pd.to_numeric(staff_metrics[altmetric_col], errors='coerce')
+            staff_metrics['_alt_flag'] = (staff_metrics['_alt_score'] > 0).astype(int)
+        else:
+            staff_metrics['_alt_score'] = np.nan
+            staff_metrics['_alt_flag'] = np.nan
+        if 'embedding_score' in staff_metrics.columns:
+            staff_metrics['_embed'] = staff_metrics['embedding_score']
+        else:
+            staff_metrics['_embed'] = np.nan
+
+        metrics = staff_metrics.groupby(group_col).agg({
+            '_q1_flag': 'mean',
+            '_lead_flag': 'mean',
+            '_oa_flag': 'mean',
+            '_alt_flag': 'mean',
+            '_alt_score': 'mean',
+            '_embed': 'mean'
+        }).reset_index().rename(columns={
+            '_q1_flag': 'q1_rate',
+            '_lead_flag': 'leadership_rate',
+            '_oa_flag': 'open_access_rate',
+            '_alt_flag': 'altmetric_coverage',
+            '_alt_score': 'avg_altmetric_score',
+            '_embed': 'avg_semantic_score'
+        })
+        metrics = metrics.rename(columns={group_col: 'staff_id'})
+
+        for col in ['q1_rate', 'leadership_rate', 'open_access_rate', 'altmetric_coverage']:
+            metrics[col] = (metrics[col] * 100).round(2)
+        metrics['avg_altmetric_score'] = metrics['avg_altmetric_score'].round(2)
+        metrics['avg_semantic_score'] = metrics['avg_semantic_score'].round(3)
+
+        staff_summary = staff_summary.merge(metrics, on='staff_id', how='left')
+
         # Count high-quality papers (LLM score >= 8)
         high_quality = staff_papers[staff_papers['llm_relevance_score'] >= 8.0]
         high_quality_counts = high_quality.groupby(group_col).size().reset_index(name='high_quality_papers')
@@ -309,6 +394,7 @@ class ThemeSearchPipeline:
 
         # Sort by average relevance and paper count
         staff_summary = staff_summary.sort_values(['avg_relevance', 'paper_count'], ascending=False)
+        staff_summary['rank'] = range(1, len(staff_summary) + 1)
 
         # Add theme metadata
         staff_summary['theme_id'] = theme['id']
@@ -346,40 +432,63 @@ class ThemeSearchPipeline:
         logger.info(f"Output directory: {output_dir}")
         logger.info(f"{'='*60}\n")
 
-        all_theme_scores = []
-        all_staff_summaries = []
+        theme_results = []
+        publication_counts = []
+        normalized_avgs = []
+        top_staff_entries = []
 
         for theme in themes:
             theme_output_dir = output_dir / theme['id']
+            theme_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Run search for this theme
             theme_df = self.run_theme(theme, theme_output_dir)
+            theme_results.append((theme, theme_df, theme_output_dir))
+            publication_counts.append(len(theme_df))
+            normalized_avgs.append(self.scorer.preview_normalized_impact(theme_df))
 
+        self.scorer.set_output_cap(publication_counts)
+        self.scorer.set_normalized_cap(normalized_avgs)
+
+        all_theme_scores = []
+        all_staff_summaries = []
+
+        for theme, theme_df, theme_output_dir in theme_results:
             if theme_df.empty:
                 continue
 
-            # Calculate theme score
             theme_score = self.scorer.score_theme(theme_df, theme['id'], theme['name'])
+            theme_score['parent_theme'] = theme.get('parent_theme')
+            if 'embedding_score' in theme_df.columns:
+                theme_score['avg_semantic_score'] = float(theme_df['embedding_score'].mean())
+            else:
+                theme_score['avg_semantic_score'] = np.nan
             all_theme_scores.append(theme_score)
 
-            # Generate staff summary
             staff_df = self.aggregate_staff_for_theme(theme_df, theme, theme_output_dir)
-
-            if not staff_df.empty:
-                all_staff_summaries.append(staff_df)
+        if not staff_df.empty:
+            all_staff_summaries.append(staff_df)
+            top_staff_entries.append(staff_df.head(20).copy())
 
         # Create theme comparison CSV
         if all_theme_scores:
             comparison_df = pd.DataFrame(all_theme_scores)
-            comparison_df = comparison_df.sort_values('theme_score', ascending=False)
+        if 'avg_semantic_score' in comparison_df.columns:
+            comparison_df['avg_semantic_score'] = comparison_df['avg_semantic_score'].round(3)
+            group_key = comparison_df['parent_theme'].fillna(comparison_df['theme_id'])
+            comparison_df['rank_within_parent'] = (
+                comparison_df.groupby(group_key)['theme_score']
+                .rank(method='dense', ascending=False)
+                .astype(int)
+            )
+            comparison_out = comparison_df.sort_values(['parent_theme', 'rank_within_parent'])
             comparison_path = output_dir / "theme_comparison.csv"
-            comparison_df.to_csv(comparison_path, index=False)
+            comparison_out.to_csv(comparison_path, index=False)
             logger.info(f"\n{'='*60}")
             logger.info(f"RESULTS SUMMARY")
             logger.info(f"{'='*60}")
             logger.info(f"Saved theme comparison to {comparison_path}")
             logger.info(f"\nTop 5 themes by score:")
-            for i, row in comparison_df.head(5).iterrows():
+            for i, row in comparison_df.sort_values('theme_score', ascending=False).head(5).iterrows():
                 logger.info(f"  {i+1}. {row['theme_name']}: {row['theme_score']:.1f} "
                           f"({row['publications']} pubs, R:{row['research_score']:.1f}, "
                           f"S:{row['societal_score']:.1f})")
@@ -390,6 +499,12 @@ class ThemeSearchPipeline:
             combined_staff_path = output_dir / "all_themes_staff.csv"
             combined_staff.to_csv(combined_staff_path, index=False)
             logger.info(f"Saved combined staff summaries to {combined_staff_path}")
+
+        if top_staff_entries:
+            top_staff = pd.concat(top_staff_entries, ignore_index=True)
+            top_staff_path = output_dir / "top_staff_by_theme.csv"
+            top_staff.to_csv(top_staff_path, index=False)
+            logger.info(f"Saved top 20 staff per theme to {top_staff_path}")
 
         logger.info(f"\n{'='*60}")
         logger.info("PIPELINE COMPLETE")

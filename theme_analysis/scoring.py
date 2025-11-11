@@ -19,15 +19,45 @@ logger = logging.getLogger(__name__)
 class ThemeScorer:
     """Calculate SCImago-style theme scores."""
 
-    def __init__(self, baselines: Optional[Dict] = None):
+    def __init__(self, baselines: Optional[Dict] = None, global_semantic_threshold: Optional[float] = None):
         """Initialize with dataset baselines for normalization.
 
         Args:
             baselines: Optional dictionary with baseline metrics from calculate_dataset_baselines().
                       If None, will use OpenAlex data where available and mark missing as np.nan.
                       No imputation is performed.
+            global_semantic_threshold: Optional global semantic cutoff (unused placeholder for compatibility).
         """
         self.baselines = baselines
+        self.global_semantic_threshold = global_semantic_threshold
+        self.output_cap = 250.0  # default cap
+        self.normalized_cap = 2.0  # default FWCI cap
+
+    def set_output_cap(self, publication_counts: List[int], percentile: float = 90.0) -> None:
+        """Adjust the publication normalization cap based on percentile of counts."""
+        valid = [count for count in publication_counts if count and count > 0]
+        if not valid:
+            self.output_cap = 250.0
+            return
+        cap = float(np.percentile(valid, percentile))
+        if cap <= 0:
+            cap = float(max(valid))
+        self.output_cap = max(cap, 1.0)
+
+    def set_normalized_cap(self, normalized_values: List[float], percentile: float = 90.0) -> None:
+        """Adjust the normalized impact cap based on percentile of FWCI averages."""
+        valid = [value for value in normalized_values if value is not None and not pd.isna(value) and value > 0]
+        if not valid:
+            self.normalized_cap = 2.0
+            return
+        cap = float(np.percentile(valid, percentile))
+        if cap <= 0:
+            cap = float(max(valid))
+        self.normalized_cap = max(cap, 0.5)
+
+    def preview_normalized_impact(self, theme_df: pd.DataFrame) -> float:
+        """Return the raw average normalized impact for a theme (without scaling)."""
+        return self._calculate_normalized_impact(theme_df)
 
     def score_theme(self, theme_df: pd.DataFrame, theme_id: str, theme_name: str) -> Dict:
         """Calculate comprehensive theme score.
@@ -75,8 +105,8 @@ class ThemeScorer:
         """Calculate all research performance components."""
         total_pubs = len(theme_df)
 
-        # 1. Output (normalized to 250 publications = max)
-        output_normalized = min(total_pubs / 250.0, 1.0)
+        # 1. Output normalized to configured cap (default 250, or percentile-based)
+        output_normalized = min(total_pubs / self.output_cap, 1.0) if self.output_cap > 0 else 0.0
 
         # 2. International Collaboration
         intl_collab_rate = self._calculate_intl_collaboration(theme_df)
@@ -369,10 +399,10 @@ class ThemeScorer:
     def _calculate_research_score(self, components: Dict) -> float:
         """Calculate overall research performance score."""
         normalized_component = components['normalized_impact']
-        if pd.isna(normalized_component):
+        if pd.isna(normalized_component) or self.normalized_cap <= 0:
             normalized_component = 0.0
         else:
-            normalized_component = min(normalized_component / 2.0, 1.0)
+            normalized_component = min(normalized_component / self.normalized_cap, 1.0)
 
         return (
             0.25 * components['output_normalized'] +

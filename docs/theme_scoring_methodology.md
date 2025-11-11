@@ -149,8 +149,8 @@ Research Score = (
 
 **1. Output_Normalized (25%)**
 - Number of publications matching the theme **with complete data**
-- Normalized: `min(publication_count / 250, 1.0)`
-- Rationale: Caps out at 250 scoreable publications, making small themes scale proportionally
+- Normalized: `min(publication_count / output_cap, 1.0)` where `output_cap` is the 90th percentile of publication counts across all themes (fallback: 250)
+- Rationale: Keeps the metric informative even when one theme is an outlier; large themes above the percentile earn full credit
 - Note: Only counts `publications_scored`, not `publications_excluded`
 
 **2. International Collaboration Rate (15%)**

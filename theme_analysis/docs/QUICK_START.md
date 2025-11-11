@@ -172,6 +172,7 @@ python scripts/analyze_hierarchical_themes.py \
 ```
 results/hmri_themes_2025/
 ├── theme_comparison.csv              # Cross-theme rankings
+├── top_staff_by_theme.csv            # Top 20 staff per theme (for quick review)
 │
 ├── dementia_intervention/
 │   ├── papers.csv                    # Unique papers for this theme
@@ -184,6 +185,7 @@ results/hmri_themes_2025/
 ```
 results/hmri_themes_2025/
 ├── theme_comparison.csv                  # All 15 topics (flat list)
+├── top_staff_by_theme.csv                # Top 20 staff per topic
 ├── topic_rankings_by_theme.csv           # Topics ranked within parent themes
 ├── parent_theme_summary.csv              # Summary of 3 parent themes
 ├── hierarchical_theme_report.md          # Detailed report
@@ -210,10 +212,13 @@ results/hmri_themes_2025/
 | theme_score | Overall score 0-100 (from scored papers only) |
 | research_score | Research performance 0-100 |
 | societal_score | Altmetric coverage (% of papers with attention) |
+| parent_theme | Parent grouping from `themes.yaml` (if provided) |
+| rank_within_parent | Rank inside the parent theme based on `theme_score` |
 | unique_staff | # distinct NumberPlates |
 | q1_percentage | % in Q1 journals |
 | normalized_impact | Citations vs field average |
 | excellence_rate | % in top 10% most cited |
+| avg_semantic_score | Mean embedding similarity score |
 | altmetric_coverage | % papers with social attention |
 | avg_altmetric_score | Mean Altmetric score for attended papers |
 

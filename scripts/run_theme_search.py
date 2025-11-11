@@ -168,6 +168,12 @@ def main():
         action='store_true',
         help='Ignore per-theme max_candidates/max_results values and use all matches'
     )
+    parser.add_argument(
+        '--semantic-threshold',
+        type=float,
+        default=None,
+        help='Override semantic threshold for all themes (0-1, default: use each theme setting)'
+    )
 
     args = parser.parse_args()
 
@@ -212,7 +218,8 @@ def main():
             max_candidates=args.max_candidates,
             semantic_only=args.semantic_only,
             prompt_on_overflow=args.candidate_prompt,
-             ignore_max_limits=args.ignore_max_limits,
+            ignore_max_limits=args.ignore_max_limits,
+            global_semantic_threshold=args.semantic_threshold,
         )
 
         # Run all themes

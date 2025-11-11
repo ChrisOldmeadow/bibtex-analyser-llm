@@ -145,6 +145,7 @@ python scripts/run_theme_search.py \
 - `--candidate-prompt` pauses when the semantic filter finds more matches than the cap so you can keep the cap, send all matches, or enter a custom limit.
 - `--semantic-only` skips GPT entirely and relies on embedding similarity (you can also set `semantic_only: true` per theme). In this mode, the generic `max_candidates`/`max_results` caps are ignored unless you provide the semantic-specific variants (`semantic_max_candidates`, `semantic_max_results`) or a CLI override. The pipeline still emits placeholder relevance scores derived from embeddings for downstream compatibility.
 - `--ignore-max-limits` ignores any `max_candidates`/`max_results` defined in `themes.yaml`, letting both hybrid and semantic searches reuse every match that clears the thresholds (unless `--max-candidates` is supplied).
+- `--semantic-threshold` overrides every theme’s `semantic_threshold` with a single global value (0-1) if you need a consistent similarity cutoff across the run.
 - Per-theme overrides: add `max_candidates`, `semantic_only`, or `prompt_on_overflow` keys inside a theme entry to customize behavior for specific narratives.
 
 **Processing time:** ~5-10 minutes for 3 themes × 1000 publications (with caching)
@@ -179,6 +180,7 @@ python scripts/analyze_hierarchical_themes.py \
 ```
 results/theme_analysis_2025/
 ├── theme_comparison.csv          # Rankings and scores for all themes
+├── top_staff_by_theme.csv        # Top 20 staff per theme with scores
 │
 ├── dementia_intervention/
 │   ├── papers.csv                # All papers for this theme
@@ -198,10 +200,13 @@ results/theme_analysis_2025/
 | `theme_score` | Overall score 0-100 (from scored papers only) |
 | `research_score` | Research performance (0-100) |
 | `societal_score` | Altmetric coverage (percentage of papers with attention) |
+| `parent_theme` | Parent grouping from `themes.yaml` (if provided) |
+| `rank_within_parent` | Rank within the parent group (1 = highest score) |
 | `unique_staff` | Number of contributing researchers |
 | `q1_percentage` | % papers in top-quartile journals |
 | `normalized_impact` | Citations relative to field average |
 | `excellence_rate` | % papers in top 10% most cited |
+| `avg_semantic_score` | Mean embedding similarity score |
 | `altmetric_coverage` | % papers with social media attention |
 | `avg_altmetric_score` | Mean Altmetric score for papers with attention |
 
@@ -361,7 +366,7 @@ python scripts/run_theme_search.py \
 Edit `theme_analysis/scoring.py` to adjust component weights. Default research mix:
 
 ```python
-# Defaults (output capped at 250 pubs; normalized impact capped at 2× world avg)
+# Defaults (output normalized to ~90th percentile of publications; normalized impact capped at 2× world avg)
 research_score = (
     0.25 * output_normalized +
     0.15 * intl_collab_rate +
