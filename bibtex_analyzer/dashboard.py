@@ -304,6 +304,55 @@ def generate_bibliography_summary(file_path: Path) -> Tuple[Any, Dict[str, Any]]
     return summary_content, {"display": "block"}
 
 
+def build_publication_staff_map(file_path: Path) -> Optional[str]:
+    """Create a JSON-serialized publication-to-staff mapping for downloads."""
+    if not file_path.exists():
+        return None
+
+    processor = BibtexProcessor()
+    try:
+        entries = processor.load_entries(str(file_path), deduplicate=True)
+    except Exception:
+        return None
+
+    df = pd.DataFrame(entries)
+    if df.empty or 'all_staff_ids' not in df.columns:
+        return None
+
+    id_col = 'Publication_ID' if 'Publication_ID' in df.columns else 'ID' if 'ID' in df.columns else None
+    if not id_col:
+        return None
+
+    def normalize_staff(value: Any) -> List[str]:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return []
+        if isinstance(value, list):
+            iterable = value
+        else:
+            iterable = str(value).replace(';', ',').split(',')
+        cleaned = []
+        for item in iterable:
+            text = str(item).strip().strip("'\"")
+            if text and text.lower() != 'nan':
+                cleaned.append(text)
+        return cleaned
+
+    map_df = df[[id_col, 'all_staff_ids']].copy()
+    map_df['all_staff_ids'] = map_df['all_staff_ids'].apply(normalize_staff)
+    map_df = map_df.explode('all_staff_ids')
+    if map_df.empty:
+        return None
+
+    map_df = map_df[map_df['all_staff_ids'].notna() & (map_df['all_staff_ids'] != '')]
+    if map_df.empty:
+        return None
+
+    map_df = map_df.rename(columns={id_col: 'publication_id', 'all_staff_ids': 'staff_id'})
+    map_df['publication_id'] = map_df['publication_id'].astype(str)
+    map_df['staff_id'] = map_df['staff_id'].astype(str)
+    return map_df.reset_index(drop=True).to_json(orient='split', date_format='iso')
+
+
 PAGE_SIZE = 20
 
 
@@ -440,6 +489,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dcc.Store(id='search-results-store'),
         dcc.Store(id='staff-analysis-store'),
         dcc.Store(id='staff-publication-map', data={}),
+        dcc.Store(id='publication-staff-map-store'),
         dcc.Store(id='search-summary-store', data=None),
         dcc.Store(id='search-progress-store', data={'progress': 0, 'logs': '', 'status': 'idle'}),
         dcc.Store(id='process-progress-store', data={'progress': 0, 'logs': '', 'status': 'idle'}),
@@ -452,6 +502,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         dcc.Download(id="download-tagged-data"),
         dcc.Download(id="download-search-results"),
         dcc.Download(id="download-staff-analysis"),
+        dcc.Download(id="download-publication-staff-map"),
         
         # Navigation bar
         dbc.NavbarSimple(
@@ -1033,6 +1084,13 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                     "⬇️ Download Staff Summary",
                                     id="download-staff-summary-button",
                                     color="secondary",
+                                    disabled=True
+                                ),
+                                dbc.Button(
+                                    "⬇️ Download Publication-Staff Map",
+                                    id="download-publication-staff-button",
+                                    color="secondary",
+                                    className="ms-2",
                                     disabled=True
                                 ),
                             ], md="auto", className="mb-2"),
@@ -3365,24 +3423,27 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     # Bibliography summary callback
     @app.callback(
         [Output('bibliography-summary', 'children'),
-         Output('summary-card', 'style')],
+         Output('summary-card', 'style'),
+         Output('publication-staff-map-store', 'data', allow_duplicate=True)],
         [Input('dataset-selector', 'value')],
         [State('dataset-manifest-store', 'data')],
-        prevent_initial_call=False
+        prevent_initial_call='initial_duplicate'
     )
     def update_bibliography_summary(selected_dataset_id, manifest):
         """Generate and display bibliography summary when a dataset is selected."""
         manifest = manifest or []
         entry = get_manifest_entry(manifest, selected_dataset_id)
         if not entry:
-            return "Select or upload a dataset to see summary details.", {"display": "none"}
+            return "Select or upload a dataset to see summary details.", {"display": "none"}, None
 
         try:
             file_path = upload_dir / entry['stored_name']
-            return generate_bibliography_summary(file_path)
+            summary_children, style = generate_bibliography_summary(file_path)
+            mapping_json = build_publication_staff_map(file_path)
+            return summary_children, style, mapping_json
         except Exception as exc:  # pylint: disable=broad-except
             error_msg = f"Error generating summary: {exc}"
-            return dbc.Alert(error_msg, color="danger"), {"display": "block"}
+            return dbc.Alert(error_msg, color="danger"), {"display": "block"}, None
     # Filter-only callback for applying filters without tag generation
     @app.callback(
         [Output('data-store', 'data', allow_duplicate=True),
@@ -4527,6 +4588,36 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         filename = f"staff_summary_{clean_query}_{len(staff_df)}staff.csv"
         
         return dcc.send_data_frame(staff_df.to_csv, filename=filename, index=False)
+
+    @app.callback(
+        Output('download-publication-staff-button', 'disabled'),
+        Input('publication-staff-map-store', 'data'),
+        prevent_initial_call='initial_duplicate'
+    )
+    def toggle_publication_staff_button(map_json):
+        """Enable publication-staff download when mapping exists."""
+        return not map_json
+
+    @app.callback(
+        Output('download-publication-staff-map', 'data'),
+        Input('download-publication-staff-button', 'n_clicks'),
+        State('publication-staff-map-store', 'data'),
+        State('dataset-selector', 'value'),
+        prevent_initial_call=True
+    )
+    def download_publication_staff_map(n_clicks, map_json, dataset_id):
+        """Download publication-to-staff mapping as CSV."""
+        if not n_clicks or not map_json:
+            raise PreventUpdate
+
+        map_df = pd.read_json(map_json, orient='split')
+        if map_df.empty:
+            raise PreventUpdate
+
+        slug = dataset_id or "dataset"
+        slug = "".join(c for c in slug if c.isalnum() or c in ('_', '-')).strip("_-") or "dataset"
+        filename = f"publication_staff_map_{slug}.csv"
+        return dcc.send_data_frame(map_df.to_csv, filename=filename, index=False)
     
     @app.callback(
         [Output('staff-pubs-modal', 'is_open', allow_duplicate=True),

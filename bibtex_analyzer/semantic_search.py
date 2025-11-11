@@ -17,6 +17,40 @@ from sklearn.metrics.pairwise import cosine_similarity
 logger = logging.getLogger(__name__)
 
 
+def _log_info(log_obj, message: str) -> None:
+    """Best-effort info logging that works with DashLogger or stdlib logger."""
+    if not log_obj:
+        return
+    if hasattr(log_obj, "log_info"):
+        log_obj.log_info(message)
+    elif hasattr(log_obj, "info"):
+        log_obj.info(message)
+    elif hasattr(log_obj, "log"):
+        log_obj.log(logging.INFO, message)
+
+
+def _log_error(log_obj, message: str) -> None:
+    """Best-effort error logging that works with DashLogger or stdlib logger."""
+    if not log_obj:
+        return
+    if hasattr(log_obj, "log_error"):
+        log_obj.log_error(message)
+    elif hasattr(log_obj, "error"):
+        log_obj.error(message)
+    elif hasattr(log_obj, "log"):
+        log_obj.log(logging.ERROR, message)
+
+
+def _log_success(log_obj, message: str) -> None:
+    """Best-effort success logging that falls back to info level."""
+    if not log_obj:
+        return
+    if hasattr(log_obj, "log_success"):
+        log_obj.log_success(message)
+    else:
+        _log_info(log_obj, message)
+
+
 class SemanticSearcher:
     """Semantic search for bibliographic data using OpenAI embeddings."""
     
@@ -135,13 +169,13 @@ class SemanticSearcher:
             # Log cache stats
             if logger and uncached_texts:
                 cached_in_batch = len(batch) - len(uncached_texts)
-                logger.log_info(f"Batch {i//batch_size + 1}: {cached_in_batch} cached, {len(uncached_texts)} need computing")
+                _log_info(logger, f"Batch {i//batch_size + 1}: {cached_in_batch} cached, {len(uncached_texts)} need computing")
             
             # Get embeddings for uncached texts
             if uncached_texts:
                 try:
                     if logger:
-                        logger.log_info(f"Calling OpenAI API for {len(uncached_texts)} embeddings...")
+                        _log_info(logger, f"Calling OpenAI API for {len(uncached_texts)} embeddings...")
                     
                     response = self.client.embeddings.create(
                         input=uncached_texts,
@@ -161,7 +195,7 @@ class SemanticSearcher:
                         
                 except Exception as e:
                     if logger:
-                        logger.log_error(f"Failed to get embeddings for batch: {e}")
+                        _log_error(logger, f"Failed to get embeddings for batch: {e}")
                     # Fill with zero vectors for failed embeddings
                     embedding_dim = 1536  # Default size
                     for k in uncached_indices:
@@ -173,7 +207,7 @@ class SemanticSearcher:
             # Progress update
             if logger:
                 progress = (i + len(batch)) / len(texts) * 100
-                logger.log_info(f"Embedding progress: {int(progress)}% complete")
+                _log_info(logger, f"Embedding progress: {int(progress)}% complete")
                 # Update progress if logger has set_progress method
                 if hasattr(logger, 'set_progress'):
                     # Map embedding progress to overall search progress (20-50%)
@@ -181,7 +215,7 @@ class SemanticSearcher:
                     logger.set_progress(int(search_progress))
         
         if logger:
-            logger.log_success(f"Embedding complete: {total_cached} from cache, {total_new} computed")
+            _log_success(logger, f"Embedding complete: {total_cached} from cache, {total_new} computed")
         
         return np.array(embeddings)
     
@@ -230,7 +264,7 @@ class SemanticSearcher:
             List of (index, score) tuples where score is 1.0 for exact matches
         """
         if logger:
-            logger.log_info(f"Starting exact search for '{query}' across {len(df)} papers")
+            _log_info(logger, f"Starting exact search for '{query}' across {len(df)} papers")
         
         query_lower = query.lower()
         results = []
@@ -249,10 +283,10 @@ class SemanticSearcher:
                 results.append((idx, 1.0))
                 if logger and len(results) <= 3:
                     title = str(row.get('title', 'No title'))[:50]
-                    logger.log_info(f"Exact match found: '{title}...'")
+                    _log_info(logger, f"Exact match found: '{title}...'")
         
         if logger:
-            logger.log_success(f"Exact search complete: {len(results)} matches found")
+            _log_success(logger, f"Exact search complete: {len(results)} matches found")
         
         return results
     
@@ -269,7 +303,7 @@ class SemanticSearcher:
             List of (index, score) tuples where score is normalized (0-1)
         """
         if logger:
-            logger.log_info(f"Starting fuzzy search for '{query}' (threshold: {threshold}%)")
+            _log_info(logger, f"Starting fuzzy search for '{query}' (threshold: {threshold}%)")
         
         results = []
         processed = 0
@@ -291,18 +325,25 @@ class SemanticSearcher:
                 results.append((idx, max_score / 100.0))
                 if logger and len(results) <= 3:
                     title = str(row.get('title', 'No title'))[:50]
-                    logger.log_info(f"Fuzzy match ({max_score}%): '{title}...'")
+                    _log_info(logger, f"Fuzzy match ({max_score}%): '{title}...'")
             
             processed += 1
             if logger and processed % 100 == 0:
-                logger.log_info(f"Fuzzy search progress: {processed}/{len(df)} papers processed")
+                _log_info(logger, f"Fuzzy search progress: {processed}/{len(df)} papers processed")
         
         if logger:
-            logger.log_success(f"Fuzzy search complete: {len(results)} matches found above {threshold}% threshold")
+            _log_success(logger, f"Fuzzy search complete: {len(results)} matches found above {threshold}% threshold")
         
         return results
     
-    def semantic_search(self, query: str, df: pd.DataFrame, threshold: float = 0.7, logger=None) -> List[Tuple[int, float]]:
+    def semantic_search(
+        self,
+        query: str,
+        df: pd.DataFrame,
+        threshold: float = 0.7,
+        logger=None,
+        precomputed_embeddings: Optional[np.ndarray] = None,
+    ) -> List[Tuple[int, float]]:
         """Perform semantic search using embeddings.
         
         Args:
@@ -310,33 +351,56 @@ class SemanticSearcher:
             df: DataFrame with paper data
             threshold: Minimum similarity score (0-1)
             logger: Optional logger for progress tracking
+            precomputed_embeddings: Optional precomputed embedding matrix aligned with df
             
         Returns:
             List of (index, score) tuples
         """
+        if df.empty:
+            if logger:
+                _log_info(logger, "Dataset is empty; skipping semantic search.")
+            return []
+
         if logger:
-            logger.log_info(f"Starting semantic search for '{query}' (threshold: {threshold:.2f})")
-            logger.log_info(f"Computing query embedding...")
+            _log_info(logger, f"Starting semantic search for '{query}' (threshold: {threshold:.2f})")
+            _log_info(logger, f"Computing query embedding...")
         
         # Get query embedding
         query_embedding = self.get_embedding(query)
+
+        paper_embeddings: Optional[np.ndarray] = None
+        if precomputed_embeddings is not None:
+            if len(precomputed_embeddings) == len(df):
+                paper_embeddings = precomputed_embeddings
+                if logger:
+                    _log_info(logger, "Using precomputed embeddings aligned with current dataset.")
+            else:
+                if logger:
+                    _log_error(logger, 
+                        "Provided embeddings do not match dataset rows; recomputing embeddings."
+                    )
         
+        if paper_embeddings is None:
+            if logger:
+                _log_info(logger, f"Preparing text from {len(df)} papers...")
+            
+            paper_texts = [self.prepare_paper_text(row.to_dict()) for _, row in df.iterrows()]
+            
+            # Count papers with meaningful text
+            non_empty_texts = sum(1 for text in paper_texts if text.strip())
+            if logger:
+                _log_info(logger, f"Found {non_empty_texts} papers with content for embedding")
+                _log_info(logger, "Computing paper embeddings (checking cache first)...")
+            
+            paper_embeddings = self.get_embeddings_batch(paper_texts, logger=logger)
+        
+        if paper_embeddings is None or len(paper_embeddings) == 0:
+            if logger:
+                _log_error(logger, "Paper embeddings unavailable; semantic search cannot continue.")
+            return []
+
         if logger:
-            logger.log_info(f"Preparing text from {len(df)} papers...")
-        
-        # Prepare paper texts and get embeddings
-        paper_texts = [self.prepare_paper_text(row.to_dict()) for _, row in df.iterrows()]
-        
-        # Count papers with meaningful text
-        non_empty_texts = sum(1 for text in paper_texts if text.strip())
-        if logger:
-            logger.log_info(f"Found {non_empty_texts} papers with content for embedding")
-            logger.log_info("Computing paper embeddings (checking cache first)...")
-        
-        paper_embeddings = self.get_embeddings_batch(paper_texts, logger=logger)
-        
-        if logger:
-            logger.log_info("Computing semantic similarities...")
+            _log_info(logger, "Computing semantic similarities...")
         
         # Calculate similarities with numerical safety
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -351,10 +415,10 @@ class SemanticSearcher:
                 results.append((idx, float(similarity)))
                 if logger and len(results) <= 3:
                     title = str(df.iloc[idx].get('title', 'No title'))[:50]
-                    logger.log_info(f"Semantic match ({similarity:.3f}): '{title}...'")
+                    _log_info(logger, f"Semantic match ({similarity:.3f}): '{title}...'")
         
         if logger:
-            logger.log_success(f"Semantic search complete: {len(results)} matches found above {threshold:.2f} threshold")
+            _log_success(logger, f"Semantic search complete: {len(results)} matches found above {threshold:.2f} threshold")
         
         return results
     
@@ -368,8 +432,9 @@ class SemanticSearcher:
         semantic_weight: float = 1.0,
         fuzzy_threshold: float = 80.0,
         semantic_threshold: float = 0.7,
-        max_results: int = 50,
-        logger=None
+        max_results: Optional[int] = 50,
+        logger=None,
+        precomputed_embeddings: Optional[np.ndarray] = None
     ) -> pd.DataFrame:
         """Perform multi-level search combining exact, fuzzy, and semantic methods.
         
@@ -382,7 +447,7 @@ class SemanticSearcher:
             semantic_weight: Weight for semantic matches
             fuzzy_threshold: Minimum score for fuzzy matches (0-100)
             semantic_threshold: Minimum score for semantic matches (0-1)
-            max_results: Maximum number of results to return
+            max_results: Maximum number of results to return (None = all)
             logger: Optional logger for progress tracking
             
         Returns:
@@ -392,8 +457,8 @@ class SemanticSearcher:
             methods = ['exact', 'fuzzy', 'semantic']
         
         if logger:
-            logger.log_info(f"Starting multi-search for '{query}' using methods: {', '.join(methods)}")
-            logger.log_info(f"Dataset contains {len(df)} papers")
+            _log_info(logger, f"Starting multi-search for '{query}' using methods: {', '.join(methods)}")
+            _log_info(logger, f"Dataset contains {len(df)} papers")
         
         # Store all results with their method and score
         all_results = {}
@@ -416,14 +481,20 @@ class SemanticSearcher:
         
         # Semantic search
         if 'semantic' in methods:
-            semantic_results = self.semantic_search(query, df, threshold=semantic_threshold, logger=logger)
+            semantic_results = self.semantic_search(
+                query, 
+                df, 
+                threshold=semantic_threshold, 
+                logger=logger,
+                precomputed_embeddings=precomputed_embeddings
+            )
             for idx, score in semantic_results:
                 if idx not in all_results:
                     all_results[idx] = {'exact': 0, 'fuzzy': 0, 'semantic': 0}
                 all_results[idx]['semantic'] = score
         
         if logger:
-            logger.log_info("Combining and ranking results...")
+            _log_info(logger, "Combining and ranking results...")
         
         # Combine scores and create results DataFrame
         results_data = []
@@ -452,17 +523,20 @@ class SemanticSearcher:
             results_df = results_df.reset_index(drop=True)
             
             if logger:
-                logger.log_success(f"Search complete! Found {len(results_df)} total results (showing top {min(max_results, len(results_df))})")
+                cap = len(results_df)
+                if isinstance(max_results, int) and max_results > 0:
+                    cap = min(max_results, len(results_df))
+                _log_success(logger, f"Search complete! Found {len(results_df)} total results (showing top {cap})")
                 
                 # Show method breakdown
                 exact_count = sum(1 for _, row in results_df.iterrows() if row['exact_score'] > 0)
                 fuzzy_count = sum(1 for _, row in results_df.iterrows() if row['fuzzy_score'] > 0)
                 semantic_count = sum(1 for _, row in results_df.iterrows() if row['semantic_score'] > 0)
                 
-                logger.log_info(f"Results breakdown: {exact_count} exact, {fuzzy_count} fuzzy, {semantic_count} semantic matches")
+                _log_info(logger, f"Results breakdown: {exact_count} exact, {fuzzy_count} fuzzy, {semantic_count} semantic matches")
         else:
             if logger:
-                logger.log_info("No results found matching the search criteria")
+                _log_info(logger, "No results found matching the search criteria")
         
         return results_df
 
@@ -520,9 +594,9 @@ class HybridSemanticSearcher(SemanticSearcher):
             List of papers with added LLM analysis
         """
         if logger:
-            logger.log_info(f"💰 Starting GPT-{self.llm_model} analysis for {len(papers)} papers")
-            logger.log_info(f"🔍 Query: '{query}'")
-            logger.log_info(f"💾 Checking cache first to minimize API costs...")
+            _log_info(logger, f"💰 Starting GPT-{self.llm_model} analysis for {len(papers)} papers")
+            _log_info(logger, f"🔍 Query: '{query}'")
+            _log_info(logger, f"💾 Checking cache first to minimize API costs...")
         
         analyzed_papers = []
         cache_hits = 0
@@ -550,7 +624,7 @@ class HybridSemanticSearcher(SemanticSearcher):
                 analyzed_papers.append(paper_with_analysis)
                 cache_hits += 1
                 if logger and cache_hits <= 3:  # Only log first few cache hits to avoid spam
-                    logger.log_info(f"💾 CACHE HIT #{cache_hits}: '{title[:40]}...' (saved API cost)")
+                    _log_info(logger, f"💾 CACHE HIT #{cache_hits}: '{title[:40]}...' (saved API cost)")
                 continue
             
             # LLM analysis prompt
@@ -579,7 +653,7 @@ Be precise and concise."""
 
             try:
                 if logger:
-                    logger.log_info(f"🌐 API CALL #{llm_calls + 1}: Analyzing '{title[:40]}...' with GPT-{self.llm_model}")
+                    _log_info(logger, f"🌐 API CALL #{llm_calls + 1}: Analyzing '{title[:40]}...' with GPT-{self.llm_model}")
                 
                 response = self.client.chat.completions.create(
                     model=self.llm_model,
@@ -589,7 +663,7 @@ Be precise and concise."""
                 )
                 
                 if logger:
-                    logger.log_info(f"✅ API call #{llm_calls + 1} completed successfully")
+                    _log_info(logger, f"✅ API call #{llm_calls + 1} completed successfully")
                 
                 # Parse JSON response
                 analysis_text = response.choices[0].message.content.strip()
@@ -604,7 +678,7 @@ Be precise and concise."""
                         raise ValueError("No JSON found in response")
                 except (json.JSONDecodeError, ValueError):
                     # Fallback if JSON parsing fails
-                    logger.log_error(f"Failed to parse LLM response: {analysis_text[:100]}...")
+                    _log_error(logger, f"Failed to parse LLM response: {analysis_text[:100]}...")
                     analysis = {
                         "llm_relevance_score": 5.0,
                         "llm_confidence": 3.0,
@@ -628,7 +702,7 @@ Be precise and concise."""
                 
             except Exception as e:
                 if logger:
-                    logger.log_error(f"LLM analysis failed for paper: {e}")
+                    _log_error(logger, f"LLM analysis failed for paper: {e}")
                 
                 # Add paper with default analysis
                 paper_with_analysis = paper.copy()
@@ -642,58 +716,111 @@ Be precise and concise."""
         
         if logger:
             total_cost_estimate = llm_calls * 0.0005  # Rough estimate for gpt-4o-mini
-            logger.log_success(f"💰 LLM ANALYSIS COMPLETE:")
-            logger.log_info(f"📊 Total papers analyzed: {len(papers)}")
-            logger.log_info(f"💾 Cache hits: {cache_hits} (saved ${cache_hits * 0.0005:.3f})")
-            logger.log_info(f"🌐 New API calls: {llm_calls} (cost ~${total_cost_estimate:.3f})")
+            _log_success(logger, f"💰 LLM ANALYSIS COMPLETE:")
+            _log_info(logger, f"📊 Total papers analyzed: {len(papers)}")
+            _log_info(logger, f"💾 Cache hits: {cache_hits} (saved ${cache_hits * 0.0005:.3f})")
+            _log_info(logger, f"🌐 New API calls: {llm_calls} (cost ~${total_cost_estimate:.3f})")
             if cache_hits > llm_calls:
-                logger.log_info(f"🎉 Cache saved you {(cache_hits / (cache_hits + llm_calls)) * 100:.1f}% on API costs!")
+                _log_info(logger, f"🎉 Cache saved you {(cache_hits / (cache_hits + llm_calls)) * 100:.1f}% on API costs!")
         
         return analyzed_papers
     
-    def hybrid_search(self, query: str, df: pd.DataFrame, threshold: float = 0.6, 
-                     max_embedding_candidates: int = 50, max_results: int = 20, logger=None) -> List[Tuple[int, float]]:
+    def hybrid_search(
+        self,
+        query: str,
+        df: pd.DataFrame,
+        threshold: float = 0.6,
+        max_embedding_candidates: Optional[int] = 50,
+        max_results: Optional[int] = 20,
+        logger=None,
+        precomputed_embeddings: Optional[np.ndarray] = None,
+        prompt_on_overflow: bool = False,
+        semantic_only: bool = False,
+    ) -> List[Tuple[int, float]]:
         """Perform hybrid search: embeddings for speed + LLM for precision.
         
         Args:
             query: Search query
             df: DataFrame with paper data
             threshold: Minimum embedding similarity for initial filter
-            max_embedding_candidates: Max papers to pass to LLM analysis
-            max_results: Maximum final results to return
+            max_embedding_candidates: Max papers to pass to LLM analysis (None = unlimited)
+            max_results: Maximum final results to return (None = unlimited)
             logger: Optional logger for progress tracking
+            precomputed_embeddings: Optional embeddings aligned with df
+            prompt_on_overflow: Prompt before truncating candidates to the cap
+            semantic_only: Skip GPT rerank and rely on embeddings only
             
         Returns:
             List of (index, combined_score) tuples
         """
         if logger:
-            logger.log_info(f"🚀 HYBRID SEARCH: '{query}' across {len(df)} papers")
-            logger.log_info(f"📊 Phase 1: Fast embedding scan of ALL {len(df)} papers (threshold: {threshold:.2f})")
+            _log_info(logger, f"🚀 HYBRID SEARCH: '{query}' across {len(df)} papers")
+            _log_info(logger, f"📊 Phase 1: Fast embedding scan of ALL {len(df)} papers (threshold: {threshold:.2f})")
         
         # Phase 1: Fast embedding search to get candidates
-        embedding_results = self.semantic_search(query, df, threshold=threshold, logger=logger)
+        embedding_results = self.semantic_search(
+            query,
+            df,
+            threshold=threshold,
+            logger=logger,
+            precomputed_embeddings=precomputed_embeddings,
+        )
         
         if not embedding_results:
             if logger:
-                logger.log_info("⚠️ No embedding candidates found - lowering threshold to find some results")
+                _log_info(logger, "⚠️ No embedding candidates found - lowering threshold to find some results")
             # Try with lower threshold if no results
-            embedding_results = self.semantic_search(query, df, threshold=threshold * 0.7, logger=logger)
+            embedding_results = self.semantic_search(
+                query,
+                df,
+                threshold=threshold * 0.7,
+                logger=logger,
+                precomputed_embeddings=precomputed_embeddings,
+            )
         
         # Limit candidates for LLM analysis (cost control)
         original_candidates = len(embedding_results)
-        embedding_results = embedding_results[:max_embedding_candidates]
+        candidate_cap = original_candidates
+        if max_embedding_candidates is not None and max_embedding_candidates > 0:
+            candidate_cap = min(max_embedding_candidates, original_candidates)
+
+        if prompt_on_overflow and original_candidates > candidate_cap:
+            prompt = (
+                f"⚠️ {original_candidates} embedding matches found for '{query}'. "
+                f"Only the top {candidate_cap} will be sent to GPT.\n"
+                "Enter a new limit, 'all' to use every candidate, or press Enter to keep the cap: "
+            )
+            try:
+                user_choice = input(prompt).strip().lower()
+            except EOFError:
+                user_choice = ""
+
+            if user_choice in {"all", "a", "y", "yes"}:
+                candidate_cap = original_candidates
+            elif user_choice:
+                try:
+                    requested = int(user_choice)
+                    if requested > 0:
+                        candidate_cap = min(requested, original_candidates)
+                except ValueError:
+                    _log_info(logger, f"Ignoring invalid candidate override '{user_choice}'.")
+
+        embedding_results = embedding_results[:candidate_cap]
         
         if not embedding_results:
             if logger:
-                logger.log_info("❌ No candidates found even with lower threshold")
+                _log_info(logger, "❌ No candidates found even with lower threshold")
             return []
         
         if logger:
-            if original_candidates > max_embedding_candidates:
-                logger.log_info(f"📋 Embedding filter: {original_candidates} candidates found, limiting to top {len(embedding_results)} for cost control")
+            if original_candidates > len(embedding_results):
+                _log_info(logger, f"📋 Embedding filter: {original_candidates} candidates found, limiting to top {len(embedding_results)} for cost control")
             else:
-                logger.log_info(f"📋 Embedding filter: {len(embedding_results)} candidates found")
-            logger.log_info(f"🤖 Phase 2: GPT-{self.llm_model} analysis of {len(embedding_results)} papers (this will take time and cost money)")
+                _log_info(logger, f"📋 Embedding filter: {len(embedding_results)} candidates found")
+            if semantic_only:
+                _log_info(logger, "🤖 Semantic-only mode enabled: skipping GPT rerank.")
+            else:
+                _log_info(logger, f"🤖 Phase 2: GPT-{self.llm_model} analysis of {len(embedding_results)} papers (this will take time and cost money)")
         
         # Phase 2: Convert results to paper dictionaries for LLM analysis
         candidate_papers = []
@@ -703,46 +830,56 @@ Be precise and concise."""
             paper['embedding_score'] = embedding_score
             candidate_papers.append(paper)
         
-        # LLM analysis of candidates
-        analyzed_papers = self.llm_analyze_relevance(query, candidate_papers, logger=logger)
+        if semantic_only:
+            analyzed_papers = []
+        else:
+            # LLM analysis of candidates
+            analyzed_papers = self.llm_analyze_relevance(query, candidate_papers, logger=logger)
         
         # Store analyzed papers for dashboard access
         self._last_analyzed_papers = analyzed_papers
         
         # Phase 3: Combine scores and rank
         if logger:
-            logger.log_info("Phase 3: Combining embedding + LLM scores")
+            _log_info(logger, "Phase 3: Combining embedding + LLM scores")
         
         final_results = []
-        for paper in analyzed_papers:
-            embedding_score = paper['embedding_score']
-            llm_score = paper['llm_relevance_score'] / 10.0  # Normalize to 0-1
-            confidence = paper['llm_confidence'] / 10.0
-            
-            # Weighted combination: embedding (40%) + LLM (60%), adjusted by confidence
-            combined_score = (
-                0.4 * embedding_score + 
-                0.6 * llm_score * confidence + 
-                0.1 * confidence  # Bonus for high confidence
-            )
-            
-            final_results.append((paper['original_index'], combined_score))
+        if semantic_only:
+            trimmed = embedding_results if max_results is None or max_results <= 0 else embedding_results[:max_results]
+            final_results.extend(trimmed)
+        else:
+            for paper in analyzed_papers:
+                embedding_score = paper['embedding_score']
+                llm_score = paper['llm_relevance_score'] / 10.0  # Normalize to 0-1
+                confidence = paper['llm_confidence'] / 10.0
+                
+                # Weighted combination: embedding (40%) + LLM (60%), adjusted by confidence
+                combined_score = (
+                    0.4 * embedding_score + 
+                    0.6 * llm_score * confidence + 
+                    0.1 * confidence  # Bonus for high confidence
+                )
+                
+                final_results.append((paper['original_index'], combined_score))
         
         # Sort by combined score and limit results
         final_results.sort(key=lambda x: x[1], reverse=True)
-        final_results = final_results[:max_results]
+        if max_results is not None and max_results > 0:
+            final_results = final_results[:max_results]
         
         if logger:
-            logger.log_success(f"🎯 HYBRID SEARCH COMPLETE!")
-            logger.log_info(f"📋 Phase 1: Scanned {len(df)} papers with embeddings")
-            logger.log_info(f"🤖 Phase 2: GPT analyzed {len(embedding_results)} top candidates")
-            logger.log_info(f"🏆 Phase 3: Returning {len(final_results)} best results")
+            completion_msg = "SEMANTIC SEARCH COMPLETE!" if semantic_only else "🎯 HYBRID SEARCH COMPLETE!"
+            _log_success(logger, completion_msg)
+            _log_info(logger, f"📋 Phase 1: Scanned {len(df)} papers with embeddings")
+            if not semantic_only:
+                _log_info(logger, f"🤖 Phase 2: GPT analyzed {len(embedding_results)} top candidates")
+            _log_info(logger, f"🏆 Phase 3: Returning {len(final_results)} best results")
             
             # Log top results for debugging
-            logger.log_info(f"🥇 TOP RESULTS:")
+            _log_info(logger, f"🥇 TOP RESULTS:")
             for i, (idx, score) in enumerate(final_results[:3]):
                 title = str(df.iloc[idx].get('title', 'No title'))[:50]
-                logger.log_info(f"  #{i+1}: {score:.3f} - '{title}...'")
+                _log_info(logger, f"  #{i+1}: {score:.3f} - '{title}...'")
         
         return final_results
     
@@ -761,13 +898,13 @@ Be precise and concise."""
             List of (index, llm_score) tuples
         """
         if logger:
-            logger.log_info(f"🤖 LLM-ONLY SEARCH: '{query}' with GPT-{self.llm_model}")
-            logger.log_info(f"📊 Will analyze ALL {len(df)} papers (no embedding filter)")
-            logger.log_info(f"⚠️ This will be expensive but highest quality!")
+            _log_info(logger, f"🤖 LLM-ONLY SEARCH: '{query}' with GPT-{self.llm_model}")
+            _log_info(logger, f"📊 Will analyze ALL {len(df)} papers (no embedding filter)")
+            _log_info(logger, f"⚠️ This will be expensive but highest quality!")
             
             # Cost estimate
             estimated_cost = len(df) * 0.0005  # Rough estimate
-            logger.log_info(f"💰 Estimated cost: ~${estimated_cost:.2f}")
+            _log_info(logger, f"💰 Estimated cost: ~${estimated_cost:.2f}")
         
         # Convert all papers to list for LLM analysis
         all_papers = []
@@ -793,17 +930,17 @@ Be precise and concise."""
         results = results[:max_results]
         
         if logger:
-            logger.log_success(f"🎯 LLM-ONLY SEARCH COMPLETE!")
-            logger.log_info(f"🤖 Analyzed ALL {len(df)} papers with GPT")
-            logger.log_info(f"🏆 Found {len(results)} papers above {relevance_threshold}/10 threshold")
+            _log_success(logger, f"🎯 LLM-ONLY SEARCH COMPLETE!")
+            _log_info(logger, f"🤖 Analyzed ALL {len(df)} papers with GPT")
+            _log_info(logger, f"🏆 Found {len(results)} papers above {relevance_threshold}/10 threshold")
             
             # Log top results
             if results:
-                logger.log_info(f"🥇 TOP RESULTS:")
+                _log_info(logger, f"🥇 TOP RESULTS:")
                 for i, (idx, score) in enumerate(results[:3]):
                     title = str(df.iloc[idx].get('title', 'No title'))[:50]
                     llm_score = score * 10  # Convert back to 0-10 scale for display
-                    logger.log_info(f"  #{i+1}: {llm_score:.1f}/10 - '{title}...'")
+                    _log_info(logger, f"  #{i+1}: {llm_score:.1f}/10 - '{title}...'")
         
         return results
     
@@ -818,7 +955,7 @@ Be precise and concise."""
             List of expanded query terms including the original
         """
         if logger:
-            logger.log_info(f"Expanding query '{query}' with LLM")
+            _log_info(logger, f"Expanding query '{query}' with LLM")
         
         prompt = f"""Research Query: "{query}"
 
@@ -851,13 +988,13 @@ Be concise and research-focused."""
                 all_terms = [query] + [term for term in expanded_terms if term.lower() != query.lower()]
                 
                 if logger:
-                    logger.log_success(f"Query expanded to {len(all_terms)} terms: {', '.join(all_terms[:3])}...")
+                    _log_success(logger, f"Query expanded to {len(all_terms)} terms: {', '.join(all_terms[:3])}...")
                 
                 return all_terms
                 
         except Exception as e:
             if logger:
-                logger.log_error(f"Query expansion failed: {e}")
+                _log_error(logger, f"Query expansion failed: {e}")
         
         # Fallback: return original query
         return [query]

@@ -175,3 +175,5 @@ freshenv/
 
 .embeddings_cache/
 .llm_relevance_cache/
+.dataset_embeddings/
+uploads/

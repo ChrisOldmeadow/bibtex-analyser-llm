@@ -575,13 +575,13 @@ class StaffAnalyzer:
                 className="ms-2"
             )
 
-                metrics_list = html.Ul([
-                    html.Li(f"Avg Relevance: {row['avg_relevance']:.2f}"),
-                    html.Li(f"Avg Quality: {row['avg_quality']:.2f}"),
-                    html.Li(f"Citations per Publication: {row['citations_per_pub']:.1f}"),
-                    html.Li(f"Active Years: {row['active_years']} ({row['year_range']})"),
-                    html.Li(f"Impact Score: {row['impact_score']:.2f}")
-                ], className="mb-0")
+            metrics_list = html.Ul([
+                html.Li(f"Avg Relevance: {row['avg_relevance']:.2f}"),
+                html.Li(f"Avg Quality: {row['avg_quality']:.2f}"),
+                html.Li(f"Citations per Publication: {row['citations_per_pub']:.1f}"),
+                html.Li(f"Active Years: {row['active_years']} ({row['year_range']})"),
+                html.Li(f"Impact Score: {row['impact_score']:.2f}")
+            ], className="mb-0")
 
             summary_blocks: List[html.Div] = []
             if 'llm_summary' in summary_df.columns:
