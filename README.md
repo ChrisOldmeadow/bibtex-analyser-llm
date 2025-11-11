@@ -253,6 +253,30 @@ options:
    pytest
    ```
 
+## Theme Analysis CLI
+
+The separate `theme_analysis` module runs hybrid semantic searches across strategic themes with SCImago-style scoring and staff rollups. Launch it with:
+
+```bash
+python scripts/run_theme_search.py \
+  --dataset data/institutional_publications_enriched.csv \
+  --themes themes.yaml \
+  --output results/theme_analysis_2025/ \
+  [--baselines data/baselines.json] \
+  [--max-candidates 150] \
+  [--candidate-prompt] \
+  [--semantic-only]
+```
+
+Key flags:
+
+- `--max-candidates`: overrides each theme’s `max_candidates` value and caps how many papers per theme are sent to GPT for reranking (defaults to 100 unless set in YAML).
+- `--candidate-prompt`: when the semantic filter finds more matches than the cap, the CLI pauses so you can keep the limit, send all candidates, or enter a custom number.
+- `--semantic-only`: skips the GPT rerank entirely and relies on embedding similarity (fast + no API cost). You can also set `semantic_only: true` inside individual themes for mixed-mode runs.
+- `--ignore-max-limits`: ignore any `max_candidates`/`max_results` values defined in `themes.yaml` so hybrid/semantic runs process every match that clears the thresholds (unless you explicitly pass `--max-candidates`).
+
+Per-theme overrides (`max_candidates`, `semantic_only`, `prompt_on_overflow`) can be defined in `themes.yaml` to customize behavior per narrative. See `theme_analysis/docs/README_THEME_ANALYSIS.md` for the full workflow, scoring methodology, and output details.
+
 ### Project Structure
 
 - `bibtex_analyzer/`: Main package

@@ -27,17 +27,36 @@ logger = logging.getLogger(__name__)
 class ThemeSearchPipeline:
     """Execute batch searches across multiple strategic themes."""
 
-    def __init__(self, df: pd.DataFrame, baselines: Dict, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        baselines: Optional[Dict] = None,
+        api_key: Optional[str] = None,
+        max_candidates: Optional[int] = None,
+        semantic_only: bool = False,
+        prompt_on_overflow: bool = False,
+        ignore_max_limits: bool = False,
+    ):
         """Initialize theme search pipeline.
 
         Args:
             df: DataFrame with institutional publications
-            baselines: Baseline metrics for scoring
+            baselines: Optional baseline metrics for scoring. If None, will use OpenAlex data
+                      where available and mark missing data as np.nan (no imputation).
             api_key: OpenAI API key (or use OPENAI_API_KEY env var)
+            max_candidates: Optional override for per-theme max candidate count
+            semantic_only: Skip GPT rerank and rely on embeddings only
+            prompt_on_overflow: Prompt when embedding matches exceed the candidate cap
         """
         self.df = df
         self.baselines = baselines
         self.scorer = ThemeScorer(baselines)
+        self.max_candidates = max_candidates
+        self._max_candidates_override = max_candidates
+        self._has_candidate_override = max_candidates is not None
+        self.semantic_only = semantic_only
+        self.prompt_on_overflow = prompt_on_overflow
+        self.ignore_max_limits = ignore_max_limits
 
         # Initialize hybrid searcher
         self.searcher = HybridSemanticSearcher(api_key=api_key)
@@ -78,39 +97,86 @@ class ThemeSearchPipeline:
         logger.info(f"{'='*60}")
         logger.info(f"Narrative: {theme['narrative'][:150]}...")
 
-        # Run hybrid search with precomputed embeddings
+        theme_semantic_only = theme.get('semantic_only', self.semantic_only)
+        prompt_on_overflow = theme.get('prompt_on_overflow', False) or self.prompt_on_overflow
+        min_relevance = theme.get('min_llm_relevance', 6.0)
+        semantic_threshold = theme.get('semantic_threshold', 0.5)
+
+        # Candidate cap
+        if self._has_candidate_override:
+            candidate_limit = self._max_candidates_override
+        elif self.ignore_max_limits:
+            candidate_limit = None
+        elif theme_semantic_only:
+            candidate_limit = theme.get('semantic_max_candidates')
+        else:
+            candidate_limit = theme.get('max_candidates', 100)
+
+        # Max results (semantic-only ignores generic max_results unless a semantic-specific cap is set)
+        if self.ignore_max_limits:
+            max_results = None
+        elif theme_semantic_only:
+            max_results = theme.get('semantic_max_results')
+        else:
+            max_results = theme.get('max_results', 50)
+
+        # Run hybrid (or semantic-only) search with precomputed embeddings
         results_tuples = self.searcher.hybrid_search(
             query=theme['narrative'],
             df=self.df,
-            threshold=theme.get('semantic_threshold', 0.5),
-            max_embedding_candidates=theme.get('max_candidates', 100),
-            max_results=theme.get('max_results', 50),
+            threshold=semantic_threshold,
+            max_embedding_candidates=candidate_limit,
+            max_results=max_results,
             logger=logger,
-            precomputed_embeddings=self.precomputed_embeddings
+            precomputed_embeddings=self.precomputed_embeddings,
+            prompt_on_overflow=prompt_on_overflow,
+            semantic_only=theme_semantic_only,
         )
 
         if not results_tuples:
             logger.warning(f"No results found for theme: {theme_name}")
             return pd.DataFrame()
 
-        # Get analyzed papers from searcher
-        analyzed_papers = self.searcher._last_analyzed_papers
+        if theme_semantic_only:
+            theme_df = self._build_semantic_only_results(
+                results_tuples,
+                theme,
+                theme_id,
+                theme_name,
+                semantic_threshold=semantic_threshold,
+            )
+            threshold_label = semantic_threshold
+        else:
+            theme_df = self._build_hybrid_results(theme, theme_id, theme_name, min_relevance)
+            threshold_label = min_relevance
 
-        # Filter by minimum LLM relevance and build result DataFrame
+        if theme_df.empty:
+            return theme_df
+
+        threshold_desc = "semantic" if theme_semantic_only else "LLM relevance"
+        logger.info(f"Found {len(theme_df)} publications above {threshold_desc} threshold {threshold_label}")
+
+        # Save theme papers
+        output_dir.mkdir(parents=True, exist_ok=True)
+        papers_path = output_dir / "papers.csv"
+        theme_df.to_csv(papers_path, index=False)
+        logger.info(f"Saved papers to {papers_path}")
+
+        return theme_df
+
+    def _build_hybrid_results(self, theme: Dict, theme_id: str, theme_name: str, min_relevance: float) -> pd.DataFrame:
+        """Assemble theme DataFrame using LLM-enhanced results."""
+        analyzed_papers = getattr(self.searcher, '_last_analyzed_papers', [])
+
         result_rows = []
-        min_relevance = theme.get('min_llm_relevance', 6.0)
-
         for analyzed_paper in analyzed_papers:
             llm_score = analyzed_paper.get('llm_relevance_score', 0)
 
             if llm_score < min_relevance:
                 continue
 
-            # Get original paper data
             idx = analyzed_paper['original_index']
             paper = self.df.iloc[idx].to_dict()
-
-            # Add search metadata
             paper.update({
                 'theme_id': theme_id,
                 'theme_name': theme_name,
@@ -121,7 +187,6 @@ class ThemeSearchPipeline:
                 'llm_key_concepts': ', '.join(analyzed_paper.get('llm_key_concepts', [])),
                 'hybrid_score': analyzed_paper.get('hybrid_score', 0)
             })
-
             result_rows.append(paper)
 
         if not result_rows:
@@ -129,18 +194,45 @@ class ThemeSearchPipeline:
             return pd.DataFrame()
 
         theme_df = pd.DataFrame(result_rows)
-
-        # Sort by LLM relevance score
         theme_df = theme_df.sort_values('llm_relevance_score', ascending=False)
+        return theme_df
 
-        logger.info(f"Found {len(theme_df)} publications above relevance threshold {min_relevance}")
+    def _build_semantic_only_results(
+        self,
+        results_tuples: List[tuple],
+        theme: Dict,
+        theme_id: str,
+        theme_name: str,
+        semantic_threshold: float,
+    ) -> pd.DataFrame:
+        """Build results DataFrame when running without LLM rerank."""
+        rows: List[Dict] = []
+        cutoff = float(semantic_threshold or 0.0)
 
-        # Save theme papers
-        output_dir.mkdir(parents=True, exist_ok=True)
-        papers_path = output_dir / "papers.csv"
-        theme_df.to_csv(papers_path, index=False)
-        logger.info(f"Saved papers to {papers_path}")
+        for idx, score in results_tuples:
+            if score < cutoff:
+                continue
+            pseudo_relevance = round(float(score) * 10, 3)
 
+            paper = self.df.iloc[idx].to_dict()
+            paper.update({
+                'theme_id': theme_id,
+                'theme_name': theme_name,
+                'embedding_score': score,
+                'llm_relevance_score': pseudo_relevance,
+                'llm_confidence': 0.0,
+                'llm_reasoning': 'Semantic-only mode (LLM rerank disabled)',
+                'llm_key_concepts': '',
+                'hybrid_score': score,
+            })
+            rows.append(paper)
+
+        if not rows:
+            logger.warning(f"No semantic matches above threshold {cutoff} for theme: {theme_name}")
+            return pd.DataFrame()
+
+        theme_df = pd.DataFrame(rows)
+        theme_df = theme_df.sort_values('llm_relevance_score', ascending=False)
         return theme_df
 
     def aggregate_staff_for_theme(self, theme_df: pd.DataFrame, theme: Dict,
@@ -211,6 +303,7 @@ class ThemeSearchPipeline:
         # Count high-quality papers (LLM score >= 8)
         high_quality = staff_papers[staff_papers['llm_relevance_score'] >= 8.0]
         high_quality_counts = high_quality.groupby(group_col).size().reset_index(name='high_quality_papers')
+        high_quality_counts = high_quality_counts.rename(columns={group_col: 'staff_id'})
         staff_summary = staff_summary.merge(high_quality_counts, on='staff_id', how='left')
         staff_summary['high_quality_papers'] = staff_summary['high_quality_papers'].fillna(0).astype(int)
 

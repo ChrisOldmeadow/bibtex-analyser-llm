@@ -21,6 +21,10 @@ import os
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -36,9 +40,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_publication_data(input_path: Path) -> pd.DataFrame:
-    """Load institutional publication data from CSV with automatic deduplication."""
+def load_publication_data(input_path: Path, deduplicate: bool = True) -> pd.DataFrame:
+    """Load institutional publication data from CSV with optional deduplication."""
     logger.info(f"Loading publication data from {input_path}")
+    logger.info("  Deduplication: %s", "enabled" if deduplicate else "skipped")
 
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
@@ -47,18 +52,19 @@ def load_publication_data(input_path: Path) -> pd.DataFrame:
     from bibtex_analyzer.bibtex_processor import BibtexProcessor
 
     processor = BibtexProcessor()
-    entries = processor.load_entries(str(input_path), deduplicate=True)
+    entries = processor.load_entries(str(input_path), deduplicate=deduplicate)
 
     # Convert to DataFrame
     df = pd.DataFrame(entries)
 
-    logger.info(f"  Loaded {len(df)} unique publications (after deduplication)")
-    logger.info(f"  Original entries: {processor.deduplication_stats['total_entries']}")
-    logger.info(f"  Duplicates removed: {processor.deduplication_stats['duplicates_removed']}")
-
-    if processor.deduplication_stats['staff_contributors']:
-        multi_author_count = sum(1 for staff_list in processor.deduplication_stats['staff_contributors'].values() if len(staff_list) > 1)
-        logger.info(f"  Multi-staff publications: {multi_author_count}")
+    logger.info(f"  Loaded {len(df)} publications")
+    dedup_stats = processor.deduplication_stats
+    if deduplicate:
+        logger.info(f"  Original entries: {dedup_stats['total_entries']}")
+        logger.info(f"  Duplicates removed: {dedup_stats['duplicates_removed']}")
+        if dedup_stats['staff_contributors']:
+            multi_author_count = sum(1 for staff_list in dedup_stats['staff_contributors'].values() if len(staff_list) > 1)
+            logger.info(f"  Multi-staff publications with >1 staff: {multi_author_count}")
 
     return df
 
@@ -117,8 +123,8 @@ def main():
     parser.add_argument(
         '--baselines',
         type=Path,
-        required=True,
-        help='Path to baselines JSON (from calculate_baselines.py)'
+        required=False,
+        help='Optional path to baselines JSON (from calculate_baselines.py). If not provided, will use OpenAlex enrichment data where available.'
     )
     parser.add_argument(
         '--output',
@@ -136,6 +142,32 @@ def main():
         type=int,
         help='Maximum publication year to include (optional)'
     )
+    parser.add_argument(
+        '--skip-dedup',
+        action='store_true',
+        help='Skip deduplication when loading the dataset'
+    )
+    parser.add_argument(
+        '--max-candidates',
+        type=int,
+        default=None,
+        help='Override the per-theme max_candidates limit for LLM reranking (default 100 per theme unless set in YAML)'
+    )
+    parser.add_argument(
+        '--semantic-only',
+        action='store_true',
+        help='Skip the LLM rerank step and rely on semantic embeddings only (faster, no GPT cost)'
+    )
+    parser.add_argument(
+        '--candidate-prompt',
+        action='store_true',
+        help='Prompt before limiting to max_candidates when far more embedding matches are found'
+    )
+    parser.add_argument(
+        '--ignore-max-limits',
+        action='store_true',
+        help='Ignore per-theme max_candidates/max_results values and use all matches'
+    )
 
     args = parser.parse_args()
 
@@ -150,12 +182,16 @@ def main():
         # Validate inputs
         themes = validate_themes_file(args.themes)
 
-        # Load baselines
-        logger.info("Loading baselines...")
-        baselines = load_baselines(args.baselines)
+        # Load baselines (optional)
+        if args.baselines:
+            logger.info("Loading baselines...")
+            baselines = load_baselines(args.baselines)
+        else:
+            logger.info("No baselines provided - will use OpenAlex enrichment data where available")
+            baselines = None
 
         # Load publication data
-        df = load_publication_data(args.dataset)
+        df = load_publication_data(args.dataset, deduplicate=not args.skip_dedup)
 
         # Filter by year range if specified
         if args.min_year or args.max_year:
@@ -170,7 +206,14 @@ def main():
 
         # Initialize pipeline
         logger.info("\nInitializing theme search pipeline...")
-        pipeline = ThemeSearchPipeline(df, baselines)
+        pipeline = ThemeSearchPipeline(
+            df,
+            baselines,
+            max_candidates=args.max_candidates,
+            semantic_only=args.semantic_only,
+            prompt_on_overflow=args.candidate_prompt,
+             ignore_max_limits=args.ignore_max_limits,
+        )
 
         # Run all themes
         logger.info("\nStarting theme search...\n")

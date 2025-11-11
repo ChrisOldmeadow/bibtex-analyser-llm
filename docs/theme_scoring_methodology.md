@@ -147,10 +147,10 @@ Research Score = (
 
 #### Component Definitions
 
-**1. Output_Normalized (15%)**
+**1. Output_Normalized (25%)**
 - Number of publications matching the theme **with complete data**
-- Normalized: `min(publication_count / 100, 1.0)`
-- Rationale: Themes with 100+ scoreable publications get maximum; linear scaling below
+- Normalized: `min(publication_count / 250, 1.0)`
+- Rationale: Caps out at 250 scoreable publications, making small themes scale proportionally
 - Note: Only counts `publications_scored`, not `publications_excluded`
 
 **2. International Collaboration Rate (15%)**
@@ -168,7 +168,7 @@ Research Score = (
 - Formula: `(q1_papers / total_scored_papers) × 100`
 - Papers missing both quartile fields are excluded from scoring
 
-**4. Normalized Impact (20%)**
+**4. Normalized Impact (10%)**
 - Field-normalized citation rate relative to world average
 - **Primary source:** `openalex_fwci_approx` (from OpenAlex enrichment)
   - Calculated from citation percentile within publication year
@@ -182,8 +182,7 @@ Research Score = (
   # Average across all papers in theme
   avg_fwci = mean([fwci for each scored paper])
 
-  # Normalize for scoring (cap at 2.0 = max score)
-  normalized_impact_score = min(avg_fwci / 2.0, 1.0)
+  # For scoring, contribution = min(avg_fwci / 2.0, 1.0)
   ```
 - Papers missing `openalex_fwci_approx` are excluded from scoring
 
@@ -220,38 +219,20 @@ Research Score = (
 
 ### Stage 2: Societal Impact Score (0-100)
 
-Measures public engagement and attention through altmetrics:
+Measures the share of publications that attracted measurable online attention:
 
 ```
-Societal Score = (
-    0.60 × Altmetric_Coverage_Rate +     # % papers with any altmetric attention
-    0.40 × Altmetric_Intensity_Rate      # Average attention relative to 95th percentile
-) × 100
+Societal Score = Altmetric_Coverage_Rate × 100
 ```
 
-#### Component Definitions
+#### Component Definition
 
-**1. Altmetric Coverage Rate (60%)**
-- Percentage of publications with any altmetric attention (score > 0)
-- Uses `Altmetrics_Score` field from HMRI CSV
-- Formula: `(papers_with_altmetrics / total_scored_papers)`
-- Papers missing altmetric data are excluded from scoring
-
-**2. Altmetric Intensity Rate (40%)**
-- Average altmetric score normalized to 95th percentile of **scored papers only**
-- Calculation:
-  ```python
-  # Only include papers with altmetric scores
-  papers_with_scores = [p for p in scored_papers if p.Altmetrics_Score > 0]
-
-  avg_score = mean([p.Altmetrics_Score for p in papers_with_scores])
-
-  # Calculate 95th percentile from all scored papers in dataset
-  p95_threshold = percentile([p.Altmetrics_Score for p in all_scored_papers], 95)
-
-  intensity = min(avg_score / p95_threshold, 1.0) if p95_threshold > 0 else 0
-  ```
-- Note: Percentile calculated only from papers with complete data to avoid bias
+- **Altmetric Coverage Rate**
+  - Percentage of scored publications with `Altmetrics_Score > 0`
+  - Uses `Altmetrics_Score` (or `altmetrics_score`) from the HMRI CSV
+  - Formula: `(papers_with_altmetrics / total_scored_papers)`
+  - Papers missing altmetric data are excluded from both numerator and denominator
+  - The raw `avg_altmetric_score` is reported separately for context but does not influence the score
 
 ---
 

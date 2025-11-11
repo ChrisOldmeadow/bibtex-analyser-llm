@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 class ThemeScorer:
     """Calculate SCImago-style theme scores."""
 
-    def __init__(self, baselines: Dict):
+    def __init__(self, baselines: Optional[Dict] = None):
         """Initialize with dataset baselines for normalization.
 
         Args:
-            baselines: Dictionary with baseline metrics from calculate_dataset_baselines()
+            baselines: Optional dictionary with baseline metrics from calculate_dataset_baselines().
+                      If None, will use OpenAlex data where available and mark missing as np.nan.
+                      No imputation is performed.
         """
         self.baselines = baselines
 
@@ -73,92 +75,137 @@ class ThemeScorer:
         """Calculate all research performance components."""
         total_pubs = len(theme_df)
 
-        # 1. Output (normalized to 100 publications = max)
-        output_normalized = min(total_pubs / 100.0, 1.0)
+        # 1. Output (normalized to 250 publications = max)
+        output_normalized = min(total_pubs / 250.0, 1.0)
 
         # 2. International Collaboration
-        intl_collab_rate = self._calculate_intl_collaboration(theme_df, total_pubs)
+        intl_collab_rate = self._calculate_intl_collaboration(theme_df)
 
         # 3. Q1 Publications
-        q1_rate = self._calculate_q1_percentage(theme_df, total_pubs)
+        q1_rate = self._calculate_q1_percentage(theme_df)
 
         # 4. Normalized Impact
-        avg_normalized_impact, normalized_impact_score = self._calculate_normalized_impact(theme_df)
+        avg_normalized_impact = self._calculate_normalized_impact(theme_df)
 
         # 5. Excellence (top 10% most cited)
         excellence_rate = self._calculate_excellence_rate(theme_df, total_pubs)
 
         # 6. Leadership (first or last author)
-        leadership_rate = self._calculate_leadership_rate(theme_df, total_pubs)
+        leadership_rate = self._calculate_leadership_rate(theme_df)
 
         # 7. Open Access
-        oa_rate = self._calculate_open_access_rate(theme_df, total_pubs)
+        oa_rate = self._calculate_open_access_rate(theme_df)
+
+        def pct(value):
+            if value is None or pd.isna(value):
+                return np.nan
+            return round(value * 100, 2)
+
+        def rnd(value, digits):
+            if value is None or pd.isna(value):
+                return np.nan
+            return round(value, digits)
 
         return {
-            'output_normalized': round(output_normalized, 3),
-            'intl_collaboration_rate': round(intl_collab_rate * 100, 2),
-            'q1_percentage': round(q1_rate * 100, 2),
-            'normalized_impact': round(avg_normalized_impact, 3),
-            'normalized_impact_score': round(normalized_impact_score, 3),
-            'excellence_rate': round(excellence_rate * 100, 2),
-            'leadership_rate': round(leadership_rate * 100, 2),
-            'open_access_rate': round(oa_rate * 100, 2),
+            'output_normalized': rnd(output_normalized, 3),
+            'intl_collaboration_rate': pct(intl_collab_rate),
+            'q1_percentage': pct(q1_rate),
+            'normalized_impact': rnd(avg_normalized_impact, 3),
+            'excellence_rate': pct(excellence_rate),
+            'leadership_rate': pct(leadership_rate),
+            'open_access_rate': pct(oa_rate),
         }
 
     def _calculate_societal_components(self, theme_df: pd.DataFrame) -> Dict:
-        """Calculate societal impact components."""
+        """Calculate societal impact components.
+
+        Uses np.nan for missing data - no imputation.
+        """
         total_pubs = len(theme_df)
 
-        # Get papers with altmetric scores
-        altmetric_scores = theme_df['Altmetrics_Score'].fillna(0)
-        altmetric_scores = altmetric_scores[altmetric_scores > 0]
+        # Get papers with altmetric scores - keep missing as missing, don't impute
+        altmetric_col = None
+        for col in ['Altmetrics_Score', 'altmetrics_score']:
+            if col in theme_df.columns:
+                altmetric_col = col
+                break
+
+        if altmetric_col:
+            altmetric_numeric = pd.to_numeric(theme_df[altmetric_col], errors='coerce')
+            altmetric_scores = altmetric_numeric.dropna()
+            altmetric_scores = altmetric_scores[altmetric_scores > 0]
+        else:
+            altmetric_scores = pd.Series(dtype=float)
 
         # Coverage: % papers with any altmetric attention
         coverage_rate = len(altmetric_scores) / total_pubs if total_pubs > 0 else 0
 
-        # Intensity: average score relative to 95th percentile
-        if len(altmetric_scores) > 0:
-            avg_altmetric = altmetric_scores.mean()
-            p95_threshold = self.baselines['altmetrics'].get('p95', 100.0)
-            intensity_rate = min(avg_altmetric / p95_threshold, 1.0) if p95_threshold > 0 else 0
-        else:
-            avg_altmetric = 0.0
-            intensity_rate = 0.0
+        avg_altmetric = altmetric_scores.mean() if len(altmetric_scores) > 0 else np.nan
 
         return {
             'altmetric_coverage': round(coverage_rate * 100, 2),
-            'altmetric_intensity': round(intensity_rate, 3),
-            'avg_altmetric_score': round(avg_altmetric, 2),
+            'avg_altmetric_score': avg_altmetric if pd.isna(avg_altmetric) else round(avg_altmetric, 2),
         }
 
-    def _calculate_intl_collaboration(self, theme_df: pd.DataFrame, total: int) -> float:
+    def _calculate_intl_collaboration(self, theme_df: pd.DataFrame) -> float:
         """Calculate international collaboration rate."""
+        countries_col = None
+        for col in ['Countries', 'countries', 'openalex_countries']:
+            if col in theme_df.columns:
+                countries_col = col
+                break
+
+        if not countries_col:
+            return np.nan
+
+        countries_series = theme_df[countries_col].dropna()
+        if countries_series.empty:
+            return np.nan
+
         intl_count = 0
-        for countries_str in theme_df['Countries'].fillna(''):
-            # Split by semicolon or comma
+        total_with_data = 0
+        for countries_str in countries_series:
             countries = [c.strip() for c in str(countries_str).replace(';', ',').split(',') if c.strip()]
-            if len(countries) > 1:  # Multiple countries = international
+            if not countries:
+                continue
+            total_with_data += 1
+            if len(countries) > 1:
                 intl_count += 1
 
-        return intl_count / total if total > 0 else 0
+        if total_with_data == 0:
+            return np.nan
+        return intl_count / total_with_data
 
-    def _calculate_q1_percentage(self, theme_df: pd.DataFrame, total: int) -> float:
+    def _calculate_q1_percentage(self, theme_df: pd.DataFrame) -> float:
         """Calculate percentage of Q1 publications."""
         q1_count = 0
+        total_with_data = 0
 
         for _, row in theme_df.iterrows():
-            # Check Clarivate first, then SJR
             quartile = row.get('Clarivate_Quartile_Rank')
             if pd.isna(quartile):
                 quartile = row.get('SJR_Best_Quartile')
+            if pd.isna(quartile):
+                quartile = row.get('clarivate_quartile_rank')
+            if pd.isna(quartile):
+                quartile = row.get('sjr_best_quartile')
 
+            if pd.isna(quartile) or str(quartile).strip() == '':
+                continue
+
+            total_with_data += 1
             if str(quartile).strip().upper() == 'Q1':
                 q1_count += 1
 
-        return q1_count / total if total > 0 else 0
+        if total_with_data == 0:
+            return np.nan
+        return q1_count / total_with_data
 
-    def _calculate_normalized_impact(self, theme_df: pd.DataFrame) -> tuple:
+    def _calculate_normalized_impact(self, theme_df: pd.DataFrame) -> float:
         """Calculate field-normalized citation impact.
+
+        Prioritizes OpenAlex FWCI when available, falls back to baselines.
+        Papers with no data are skipped (not imputed).
 
         Returns:
             Tuple of (average_normalized_impact, score_for_calculation)
@@ -166,110 +213,172 @@ class ThemeScorer:
         normalized_impacts = []
 
         for _, row in theme_df.iterrows():
-            # Get best citation count
-            scopus = row.get('Citations_Scopus', 0) or 0
-            wos = row.get('Citations_WoS', 0) or 0
-            citations = max(float(scopus), float(wos))
+            # PRIORITY 1: Use OpenAlex FWCI if available (already field-normalized)
+            openalex_fwci = row.get('openalex_fwci_approx')
+            if pd.notna(openalex_fwci):
+                try:
+                    fwci_value = float(openalex_fwci)
+                except (TypeError, ValueError):
+                    fwci_value = None
+                if fwci_value is not None and fwci_value > 0:
+                    normalized_impacts.append(fwci_value)
+                    continue
 
-            # Get expected citations for this field/year/type
-            for_codes_str = row.get('FoR_Codes_2020', '')
-            for_code = str(for_codes_str).replace(';', ',').split(',')[0].strip() if for_codes_str else None
+            # PRIORITY 2: Calculate from baselines (if available)
+            if self.baselines:
+                # Get best citation count
+                scopus = row.get('Citations_Scopus', 0) or 0
+                wos = row.get('Citations_WoS', 0) or 0
+                citations = max(float(scopus), float(wos))
 
-            year = row.get('Reported_Year')
-            pub_type = row.get('Publication_Type', 'Article')
+                # Get expected citations for this field/year/type
+                for_codes_str = row.get('FoR_Codes_2020', '')
+                for_code = str(for_codes_str).replace(';', ',').split(',')[0].strip() if for_codes_str else None
 
-            # Look up expected citations
-            if for_code and year:
-                key = f"{for_code}|{int(year)}|{pub_type}"
-                expected = self.baselines['citations'].get(
-                    key,
-                    self.baselines['citations'].get('overall_median', 1.0)
-                )
-            else:
-                expected = self.baselines['citations'].get('overall_median', 1.0)
+                year = row.get('Reported_Year')
+                pub_type = row.get('Publication_Type', 'Article')
 
-            # Calculate normalized impact
-            if expected > 0:
-                normalized_impacts.append(citations / expected)
-            else:
-                normalized_impacts.append(1.0)  # Neutral if no baseline
+                # Look up expected citations
+                if for_code and year:
+                    key = f"{for_code}|{int(year)}|{pub_type}"
+                    expected = self.baselines['citations'].get(
+                        key,
+                        self.baselines['citations'].get('overall_median', 1.0)
+                    )
+                else:
+                    expected = self.baselines['citations'].get('overall_median', 1.0)
 
-        avg_normalized = np.mean(normalized_impacts) if normalized_impacts else 1.0
+                # Calculate normalized impact
+                if expected > 0:
+                    normalized_impacts.append(citations / expected)
+                # If no expected baseline, skip this paper (don't impute)
+            # If no OpenAlex data and no baselines - skip this paper (don't impute)
 
-        # Cap at 2.0 for scoring (2.0 = twice world average = max score)
-        score = min(avg_normalized / 2.0, 1.0)
-
-        return avg_normalized, score
+        if normalized_impacts:
+            return float(np.mean(normalized_impacts))
+        return np.nan
 
     def _calculate_excellence_rate(self, theme_df: pd.DataFrame, total: int) -> float:
-        """Calculate percentage of papers in top 10% most cited."""
+        """Calculate percentage of papers in top 10% most cited.
+
+        Prioritizes OpenAlex citation percentile when available, falls back to baselines.
+        Papers with no data are skipped (not imputed).
+        """
         excellence_count = 0
+        papers_with_data = 0
 
         for _, row in theme_df.iterrows():
-            # Get best citation count
-            scopus = row.get('Citations_Scopus', 0) or 0
-            wos = row.get('Citations_WoS', 0) or 0
-            citations = max(float(scopus), float(wos))
+            # PRIORITY 1: Use OpenAlex citation percentile if available
+            openalex_percentile = row.get('openalex_citation_percentile')
+            if pd.notna(openalex_percentile):
+                papers_with_data += 1
+                # Top 10% = 90th percentile or above
+                try:
+                    percentile_value = float(openalex_percentile)
+                except (TypeError, ValueError):
+                    percentile_value = None
+                if percentile_value is not None and percentile_value >= 90.0:
+                    excellence_count += 1
+                    continue
 
-            # Get 90th percentile threshold for this field/year
-            for_codes_str = row.get('FoR_Codes_2020', '')
-            for_code = str(for_codes_str).replace(';', ',').split(',')[0].strip() if for_codes_str else None
-            year = row.get('Reported_Year')
+            # PRIORITY 2: Calculate from baselines (if available)
+            if self.baselines:
+                # Get best citation count
+                scopus = row.get('Citations_Scopus', 0) or 0
+                wos = row.get('Citations_WoS', 0) or 0
+                citations = max(float(scopus), float(wos))
 
-            if for_code and year:
-                key = f"{for_code}|{int(year)}"
-                p90_threshold = self.baselines['excellence'].get(
-                    key,
-                    self.baselines['excellence'].get('overall_p90', 0)
-                )
-            else:
-                p90_threshold = self.baselines['excellence'].get('overall_p90', 0)
+                # Get 90th percentile threshold for this field/year
+                for_codes_str = row.get('FoR_Codes_2020', '')
+                for_code = str(for_codes_str).replace(';', ',').split(',')[0].strip() if for_codes_str else None
+                year = row.get('Reported_Year')
 
-            if citations >= p90_threshold:
-                excellence_count += 1
+                if for_code and year:
+                    key = f"{for_code}|{int(year)}"
+                    p90_threshold = self.baselines['excellence'].get(
+                        key,
+                        self.baselines['excellence'].get('overall_p90', 0)
+                    )
+                else:
+                    p90_threshold = self.baselines['excellence'].get('overall_p90', 0)
 
-        return excellence_count / total if total > 0 else 0
+                papers_with_data += 1
+                if citations >= p90_threshold:
+                    excellence_count += 1
+            # If no OpenAlex data and no baselines - skip this paper (don't impute)
 
-    def _calculate_leadership_rate(self, theme_df: pd.DataFrame, total: int) -> float:
+        return excellence_count / papers_with_data if papers_with_data > 0 else 0
+
+    def _calculate_leadership_rate(self, theme_df: pd.DataFrame) -> float:
         """Calculate percentage of papers with first or last authorship."""
         leadership_count = 0
+        total_with_data = 0
 
         for _, row in theme_df.iterrows():
             first = row.get('First_Author')
+            if first is None:
+                first = row.get('first_author')
             last = row.get('Last_Author')
+            if last is None:
+                last = row.get('last_author')
 
-            # Handle various boolean representations
-            if first in [True, 1, '1', 'true', 'True', 'TRUE'] or \
-               last in [True, 1, '1', 'true', 'True', 'TRUE']:
-                leadership_count += 1
-
-        return leadership_count / total if total > 0 else 0
-
-    def _calculate_open_access_rate(self, theme_df: pd.DataFrame, total: int) -> float:
-        """Calculate percentage of open access publications."""
-        oa_count = 0
-
-        for _, row in theme_df.iterrows():
-            # Check for PMC ID (definitive OA indicator)
-            pmc_id = row.get('Ref_PMC_ID')
-            if pd.notna(pmc_id) and str(pmc_id).strip():
-                oa_count += 1
+            if pd.isna(first) and pd.isna(last):
                 continue
 
-            # TODO: Could add additional OA detection:
-            # - Check DOI prefix (e.g., 10.1371 = PLOS)
-            # - Check URL for repository indicators
-            # - Check publisher field for known OA publishers
+            total_with_data += 1
+            true_values = {True, 1, '1', 'true', 'True', 'TRUE', 'Y', 'y'}
+            if first in true_values or last in true_values:
+                leadership_count += 1
 
-        return oa_count / total if total > 0 else 0
+        if total_with_data == 0:
+            return np.nan
+        return leadership_count / total_with_data
+
+    def _calculate_open_access_rate(self, theme_df: pd.DataFrame) -> float:
+        """Calculate percentage of open access publications."""
+        oa_count = 0
+        total_with_data = 0
+
+        for _, row in theme_df.iterrows():
+            pmc_id = row.get('Ref_PMC_ID')
+            if pmc_id is None:
+                pmc_id = row.get('ref_pmc_id')
+
+            openalex_is_oa = row.get('openalex_is_oa')
+            is_oa_flag = None
+
+            if pd.notna(pmc_id) and str(pmc_id).strip():
+                is_oa_flag = True
+            elif openalex_is_oa is not None:
+                if isinstance(openalex_is_oa, str):
+                    is_oa_flag = openalex_is_oa.strip().lower() in {'true', '1', 'yes'}
+                else:
+                    is_oa_flag = bool(openalex_is_oa)
+
+            if is_oa_flag is None:
+                continue
+
+            total_with_data += 1
+            if is_oa_flag:
+                oa_count += 1
+
+        if total_with_data == 0:
+            return np.nan
+        return oa_count / total_with_data
 
     def _calculate_research_score(self, components: Dict) -> float:
         """Calculate overall research performance score."""
+        normalized_component = components['normalized_impact']
+        if pd.isna(normalized_component):
+            normalized_component = 0.0
+        else:
+            normalized_component = min(normalized_component / 2.0, 1.0)
+
         return (
-            0.15 * components['output_normalized'] +
+            0.25 * components['output_normalized'] +
             0.15 * (components['intl_collaboration_rate'] / 100) +
             0.20 * (components['q1_percentage'] / 100) +
-            0.20 * components['normalized_impact_score'] +
+            0.10 * normalized_component +
             0.15 * (components['excellence_rate'] / 100) +
             0.10 * (components['leadership_rate'] / 100) +
             0.05 * (components['open_access_rate'] / 100)
@@ -277,10 +386,7 @@ class ThemeScorer:
 
     def _calculate_societal_score(self, components: Dict) -> float:
         """Calculate overall societal impact score."""
-        return (
-            0.60 * (components['altmetric_coverage'] / 100) +
-            0.40 * components['altmetric_intensity']
-        ) * 100
+        return (components['altmetric_coverage'])  # already %
 
     def _empty_score(self, theme_id: str, theme_name: str) -> Dict:
         """Return zero scores for empty theme."""
@@ -295,12 +401,10 @@ class ThemeScorer:
             'intl_collaboration_rate': 0.0,
             'q1_percentage': 0.0,
             'normalized_impact': 0.0,
-            'normalized_impact_score': 0.0,
             'excellence_rate': 0.0,
             'leadership_rate': 0.0,
             'open_access_rate': 0.0,
             'altmetric_coverage': 0.0,
-            'altmetric_intensity': 0.0,
             'avg_altmetric_score': 0.0,
         }
 

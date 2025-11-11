@@ -61,9 +61,14 @@ themes:
     narrative: |
       Research focused on Alzheimer's disease, dementia, brain degeneration...
     semantic_threshold: 0.5
-    max_candidates: 100
-    max_results: 50
+    max_candidates: 100          # Hybrid candidate cap
+    max_results: 50              # Hybrid output cap
     min_llm_relevance: 6.0
+    # Optional overrides:
+    # semantic_only: true                # Skip GPT rerank for this theme
+    # prompt_on_overflow: true           # Ask before truncating candidate pool
+    # semantic_max_candidates: 300       # Separate cap when semantic_only is true
+    # semantic_max_results: 200          # Semantic-only result limit (default unlimited)
 ```
 
 **Option B: Hierarchical structure (topics within themes):**
@@ -105,6 +110,10 @@ python scripts/run_theme_search.py \
   --dataset data/institutional_publications_enriched.csv \
   --themes themes.yaml \
   --output results/theme_analysis_2025/
+  # Optional flags:
+  # --max-candidates 150   # Override per-theme candidate cap
+  # --candidate-prompt     # Ask before truncating large candidate pools
+  # --semantic-only        # Disable GPT rerank (fast, no API usage)
 ```
 
 **Or without enrichment:**
@@ -129,6 +138,14 @@ python scripts/run_theme_search.py \
 5. Generates cross-theme comparison with coverage statistics
 
 **Data Quality:** Papers missing ANY required metric are excluded from scoring (all-or-nothing approach). After reviewing exclusion rates, imputation strategies can be considered.
+
+**Controlling GPT usage**
+
+- `--max-candidates` globally raises/lowers how many papers per theme move to GPT (falls back to each theme’s `max_candidates`, default 100).
+- `--candidate-prompt` pauses when the semantic filter finds more matches than the cap so you can keep the cap, send all matches, or enter a custom limit.
+- `--semantic-only` skips GPT entirely and relies on embedding similarity (you can also set `semantic_only: true` per theme). In this mode, the generic `max_candidates`/`max_results` caps are ignored unless you provide the semantic-specific variants (`semantic_max_candidates`, `semantic_max_results`) or a CLI override. The pipeline still emits placeholder relevance scores derived from embeddings for downstream compatibility.
+- `--ignore-max-limits` ignores any `max_candidates`/`max_results` defined in `themes.yaml`, letting both hybrid and semantic searches reuse every match that clears the thresholds (unless `--max-candidates` is supplied).
+- Per-theme overrides: add `max_candidates`, `semantic_only`, or `prompt_on_overflow` keys inside a theme entry to customize behavior for specific narratives.
 
 **Processing time:** ~5-10 minutes for 3 themes × 1000 publications (with caching)
 
@@ -180,12 +197,13 @@ results/theme_analysis_2025/
 | `data_completeness_rate` | % papers with complete data |
 | `theme_score` | Overall score 0-100 (from scored papers only) |
 | `research_score` | Research performance (0-100) |
-| `societal_score` | Societal impact (0-100) |
+| `societal_score` | Altmetric coverage (percentage of papers with attention) |
 | `unique_staff` | Number of contributing researchers |
 | `q1_percentage` | % papers in top-quartile journals |
 | `normalized_impact` | Citations relative to field average |
 | `excellence_rate` | % papers in top 10% most cited |
 | `altmetric_coverage` | % papers with social media attention |
+| `avg_altmetric_score` | Mean Altmetric score for papers with attention |
 
 ### [theme]/papers.csv
 
@@ -340,21 +358,36 @@ python scripts/run_theme_search.py \
 
 ### Custom scoring weights
 
-Edit `theme_analysis/scoring.py` to adjust component weights:
+Edit `theme_analysis/scoring.py` to adjust component weights. Default research mix:
 
 ```python
-# Current: 20% Q1 publications, 20% normalized impact
+# Defaults (output capped at 250 pubs; normalized impact capped at 2× world avg)
 research_score = (
+    0.25 * output_normalized +
+    0.15 * intl_collab_rate +
     0.20 * q1_rate +
-    0.20 * normalized_impact_score + ...
-)
-
-# Emphasize citations more:
-research_score = (
-    0.15 * q1_rate +               # Reduced from 20%
-    0.25 * normalized_impact_score + ...  # Increased from 20%
+    0.10 * min(normalized_impact / 2, 1.0) +
+    0.15 * excellence_rate +
+    0.10 * leadership_rate +
+    0.05 * open_access_rate
 )
 ```
+
+To emphasize citations, bump the normalized impact weight and reduce another component, e.g.:
+
+```python
+research_score = (
+    0.25 * output_normalized +
+    0.15 * intl_collab_rate +
+    0.15 * q1_rate +                 # reduced
+    0.15 * min(normalized_impact / 2, 1.0) +  # increased
+    0.15 * excellence_rate +
+    0.10 * leadership_rate +
+    0.05 * open_access_rate
+)
+```
+
+Societal score currently equals the altmetric coverage percentage (percentage of papers with a non-zero Altmetric score); the raw `avg_altmetric_score` column is included for context.
 
 ---
 

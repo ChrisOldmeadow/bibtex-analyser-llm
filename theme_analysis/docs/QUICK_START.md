@@ -209,11 +209,13 @@ results/hmri_themes_2025/
 | data_completeness_rate | % papers with complete data |
 | theme_score | Overall score 0-100 (from scored papers only) |
 | research_score | Research performance 0-100 |
-| societal_score | Altmetric impact 0-100 |
+| societal_score | Altmetric coverage (% of papers with attention) |
 | unique_staff | # distinct NumberPlates |
 | q1_percentage | % in Q1 journals |
 | normalized_impact | Citations vs field average |
 | excellence_rate | % in top 10% most cited |
+| altmetric_coverage | % papers with social attention |
+| avg_altmetric_score | Mean Altmetric score for attended papers |
 
 ### papers.csv (per theme)
 

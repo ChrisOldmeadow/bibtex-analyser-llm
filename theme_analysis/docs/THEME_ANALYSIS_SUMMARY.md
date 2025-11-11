@@ -15,8 +15,8 @@ A **complete, standalone module** for strategic research theme analysis, indepen
 ## Key Features
 
 ✅ **SCImago-style institutional scoring** (0-100 scale)
-- Research performance (65%): Output, Q1%, citations, excellence, leadership, OA
-- Societal impact (35%): Altmetric coverage & intensity
+- Research performance (65%): Output (normalized to 250 pubs), Q1%, citations, excellence, leadership, OA
+- Societal impact (35%): Altmetric coverage (with average score reported for context)
 
 ✅ **Field normalization**
 - Uses OpenAlex FWCI (Field-Weighted Citation Impact) via DOI lookup
