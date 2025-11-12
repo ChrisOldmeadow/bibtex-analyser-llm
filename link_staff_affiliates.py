@@ -56,6 +56,13 @@ def link_staff_summaries(
     staff_df["staff_id"] = staff_df["staff_id"].astype(str).str.strip()
     index_df["NumberPlate"] = index_df["NumberPlate"].astype(str).str.strip()
 
+    optional_cols = []
+    for col in ["Staff_Faculty", "Staff_School"]:
+        if col in index_df.columns:
+            optional_cols.append(col)
+        else:
+            index_df[col] = pd.NA
+
     index_lookup = (
         index_df[
             [
@@ -91,9 +98,12 @@ def link_staff_summaries(
         "staff_full_name",
         "Staff_First_Name",
         "Staff_Surname",
-        "Staff_Faculty",
-        "Staff_School",
-    ] + [
+    ]
+    if "Staff_Faculty" in merged.columns:
+        column_order.append("Staff_Faculty")
+    if "Staff_School" in merged.columns:
+        column_order.append("Staff_School")
+    column_order += [
         col
         for col in merged.columns
         if col

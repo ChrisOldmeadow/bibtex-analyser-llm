@@ -392,8 +392,8 @@ class ThemeSearchPipeline:
         staff_summary = staff_summary.merge(high_quality_counts, on='staff_id', how='left')
         staff_summary['high_quality_papers'] = staff_summary['high_quality_papers'].fillna(0).astype(int)
 
-        # Sort by average relevance and paper count
-        staff_summary = staff_summary.sort_values(['avg_relevance', 'paper_count'], ascending=False)
+        # Sort by paper count (primary) then average relevance
+        staff_summary = staff_summary.sort_values(['paper_count', 'avg_relevance'], ascending=[False, False])
         staff_summary['rank'] = range(1, len(staff_summary) + 1)
 
         # Add theme metadata
