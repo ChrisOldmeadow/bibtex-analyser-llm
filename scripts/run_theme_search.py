@@ -174,6 +174,11 @@ def main():
         default=None,
         help='Override semantic threshold for all themes (0-1, default: use each theme setting)'
     )
+    parser.add_argument(
+        '--affiliate-index',
+        type=Path,
+        help='Optional path to HMRI affiliate index CSV for linking staff names (default: "HMRI affiliate index.csv" in current directory)'
+    )
 
     args = parser.parse_args()
 
@@ -212,6 +217,23 @@ def main():
 
         # Initialize pipeline
         logger.info("\nInitializing theme search pipeline...")
+
+        # Handle affiliate index path
+        affiliate_index = None
+        if args.affiliate_index:
+            affiliate_index = args.affiliate_index
+        else:
+            # Try default location
+            default_index = Path("HMRI affiliate index.csv")
+            if default_index.exists():
+                affiliate_index = default_index
+                logger.info(f"Found affiliate index at default location: {default_index}")
+
+        if affiliate_index:
+            logger.info(f"Staff summaries will include names from: {affiliate_index}")
+        else:
+            logger.info("No affiliate index provided - staff summaries will only include IDs")
+
         pipeline = ThemeSearchPipeline(
             df,
             baselines,
@@ -220,6 +242,7 @@ def main():
             prompt_on_overflow=args.candidate_prompt,
             ignore_max_limits=args.ignore_max_limits,
             global_semantic_threshold=args.semantic_threshold,
+            affiliate_index=affiliate_index,
         )
 
         # Run all themes

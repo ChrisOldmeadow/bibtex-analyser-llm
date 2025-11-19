@@ -37,6 +37,7 @@ class ThemeSearchPipeline:
         prompt_on_overflow: bool = False,
         ignore_max_limits: bool = False,
         global_semantic_threshold: Optional[float] = None,
+        affiliate_index: Optional[Path] = None,
     ):
         """Initialize theme search pipeline.
 
@@ -48,6 +49,7 @@ class ThemeSearchPipeline:
             max_candidates: Optional override for per-theme max candidate count
             semantic_only: Skip GPT rerank and rely on embeddings only
             prompt_on_overflow: Prompt when embedding matches exceed the candidate cap
+            affiliate_index: Optional path to HMRI affiliate index CSV for linking staff names
         """
         self.df = df
         self.baselines = baselines
@@ -59,6 +61,12 @@ class ThemeSearchPipeline:
         self.prompt_on_overflow = prompt_on_overflow
         self.ignore_max_limits = ignore_max_limits
         self.global_semantic_threshold = global_semantic_threshold
+        self.affiliate_index = affiliate_index
+        self._affiliate_lookup = None
+
+        # Load affiliate index if provided
+        if self.affiliate_index:
+            self._load_affiliate_index()
 
         # Initialize hybrid searcher
         self.searcher = HybridSemanticSearcher(api_key=api_key)
@@ -80,6 +88,114 @@ class ThemeSearchPipeline:
             logger=logger
         )
         logger.info(f"  Embeddings ready for {len(self.precomputed_embeddings)} papers")
+
+    def _load_affiliate_index(self):
+        """Load and prepare the affiliate index for staff name lookups."""
+        try:
+            index_df = pd.read_csv(self.affiliate_index)
+            required_columns = {"NumberPlate", "Staff_First_Name", "Staff_Surname"}
+            missing = required_columns - set(index_df.columns)
+            if missing:
+                logger.warning(
+                    f"Affiliate index missing required columns: {', '.join(sorted(missing))}. "
+                    f"Staff name linking will be skipped."
+                )
+                return
+
+            index_df = index_df.copy()
+            index_df["NumberPlate"] = index_df["NumberPlate"].astype(str).str.strip()
+
+            # Include optional columns if available
+            for col in ["Staff_Faculty", "Staff_School"]:
+                if col not in index_df.columns:
+                    index_df[col] = pd.NA
+
+            # Create lookup dataframe
+            self._affiliate_lookup = (
+                index_df[
+                    [
+                        "NumberPlate",
+                        "Staff_First_Name",
+                        "Staff_Surname",
+                        "Staff_Faculty",
+                        "Staff_School",
+                    ]
+                ]
+                .drop_duplicates(subset="NumberPlate")
+            )
+            logger.info(f"  Loaded affiliate index with {len(self._affiliate_lookup)} staff members")
+
+        except Exception as e:
+            logger.warning(f"Failed to load affiliate index: {e}. Staff name linking will be skipped.")
+            self._affiliate_lookup = None
+
+    def _link_staff_names(self, staff_df: pd.DataFrame) -> pd.DataFrame:
+        """Add staff names and details from affiliate index to staff summary.
+
+        Args:
+            staff_df: Staff summary DataFrame with 'staff_id' column
+
+        Returns:
+            DataFrame with added name columns (or original if no index available)
+        """
+        if self._affiliate_lookup is None or staff_df.empty:
+            return staff_df
+
+        if "staff_id" not in staff_df.columns:
+            logger.warning("Staff summary missing 'staff_id' column - cannot link names")
+            return staff_df
+
+        staff_df = staff_df.copy()
+        staff_df["staff_id"] = staff_df["staff_id"].astype(str).str.strip()
+
+        # Merge with affiliate data
+        lookup = self._affiliate_lookup.rename(columns={"NumberPlate": "numberplate"})
+        merged = staff_df.merge(
+            lookup,
+            how="left",
+            left_on="staff_id",
+            right_on="numberplate",
+        )
+
+        # Create full name column
+        merged["staff_full_name"] = (
+            merged["Staff_First_Name"].fillna("").str.strip()
+            + " "
+            + merged["Staff_Surname"].fillna("").str.strip()
+        )
+        merged["staff_full_name"] = merged["staff_full_name"].str.strip().replace({"": pd.NA})
+
+        # Drop the temporary merge key
+        merged = merged.drop(columns=["numberplate"])
+
+        # Reorder columns to put names first
+        column_order = [
+            "staff_id",
+            "staff_full_name",
+            "Staff_First_Name",
+            "Staff_Surname",
+        ]
+        if "Staff_Faculty" in merged.columns:
+            column_order.append("Staff_Faculty")
+        if "Staff_School" in merged.columns:
+            column_order.append("Staff_School")
+
+        # Add remaining columns
+        column_order += [
+            col
+            for col in merged.columns
+            if col not in {
+                "staff_id",
+                "staff_full_name",
+                "Staff_First_Name",
+                "Staff_Surname",
+                "Staff_Faculty",
+                "Staff_School",
+            }
+        ]
+        merged = merged[column_order]
+
+        return merged
 
     def run_theme(self, theme: Dict, output_dir: Path) -> pd.DataFrame:
         """Execute hybrid search for a single theme.
@@ -400,6 +516,9 @@ class ThemeSearchPipeline:
         staff_summary['theme_id'] = theme['id']
         staff_summary['theme_name'] = theme['name']
 
+        # Link staff names from affiliate index if available
+        staff_summary = self._link_staff_names(staff_summary)
+
         # Save staff summary
         staff_summary_path = output_dir / "staff_summary.csv"
         staff_summary.to_csv(staff_summary_path, index=False)
@@ -465,9 +584,9 @@ class ThemeSearchPipeline:
             all_theme_scores.append(theme_score)
 
             staff_df = self.aggregate_staff_for_theme(theme_df, theme, theme_output_dir)
-        if not staff_df.empty:
-            all_staff_summaries.append(staff_df)
-            top_staff_entries.append(staff_df.head(20).copy())
+            if not staff_df.empty:
+                all_staff_summaries.append(staff_df)
+                top_staff_entries.append(staff_df.head(20).copy())
 
         # Create theme comparison CSV
         if all_theme_scores:

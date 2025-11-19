@@ -142,6 +142,18 @@ themes:
     max_candidates: 100
     max_results: 50
     min_llm_relevance: 6.0
+    
+  - id: resilient_health_social_connections
+    name: "Social connections"
+    parent_theme: "Resilient Health and Wellbeing"
+    theme_number: 2
+    topic_number: 6
+    narrative: |
+      Support community mental health and wellbeing with social connection programs that reduce isolation and loneliness
+    semantic_threshold: 0.3
+    max_candidates: 100
+    max_results: 50
+    min_llm_relevance: 6.0 
   
   # ========================================
   # THEME 3: Discoveries and Innovation in Healthcare
