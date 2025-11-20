@@ -107,7 +107,16 @@ def get_manifest_entry(manifest: List[Dict[str, Any]], dataset_id: Optional[str]
 
 
 def ensure_embeddings_for_dataset(dataset_id: str, df: pd.DataFrame, logger: Optional["DashLogger"] = None) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
-    """Ensure embeddings exist for a dataset and return metadata."""
+    """Ensure embeddings exist for a dataset and return metadata.
+
+    NOTE: This function expects deduplicated data. Embeddings are always created for
+    deduplicated publications only.
+
+    Args:
+        dataset_id: Unique identifier for the dataset
+        df: DataFrame with deduplicated data
+        logger: Optional logger for progress messages
+    """
     metadata: Dict[str, Any] = {
         "dataset_id": dataset_id,
         "row_count": int(len(df)),
@@ -118,6 +127,7 @@ def ensure_embeddings_for_dataset(dataset_id: str, df: pd.DataFrame, logger: Opt
         metadata["status"] = "empty"
         return None, metadata
 
+    # Use existing cache format (no suffix)
     embedding_path = EMBEDDING_DIR / f"{dataset_id}.npz"
 
     def _load_embeddings(path: Path) -> Optional[np.ndarray]:
@@ -171,137 +181,265 @@ def ensure_embeddings_for_dataset(dataset_id: str, df: pd.DataFrame, logger: Opt
     return embeddings, metadata
 
 
+def generate_bibliography_summary_from_df(df: pd.DataFrame, dedup_stats: Optional[Dict] = None) -> Tuple[Any, Dict[str, Any]]:
+    """Generate summary content from a DataFrame (used for filtered data)."""
+    try:
+        # When working with filtered data, dedup stats aren't available unless provided
+        if dedup_stats is None:
+            dedup_stats = {'total_entries': len(df), 'duplicates_removed': 0}
+
+        # Ensure dedup_stats values are plain Python ints, not arrays or Series
+        # Handle various numpy/pandas types that might slip through
+        def safe_int(value, default=0):
+            """Safely convert any value to int, handling arrays/Series."""
+            try:
+                if value is None:
+                    return default
+                if isinstance(value, (list, tuple)):
+                    value = value[0] if len(value) > 0 else default
+                if hasattr(value, 'item'):  # numpy scalar
+                    return int(value.item())
+                if hasattr(value, 'iloc'):  # pandas Series
+                    return int(value.iloc[0])
+                return int(value)
+            except:
+                return default
+
+        total_entries_orig = safe_int(dedup_stats.get('total_entries'), len(df))
+        duplicates_removed = safe_int(dedup_stats.get('duplicates_removed'), 0)
+
+        dedup_stats = {
+            'total_entries': total_entries_orig,
+            'duplicates_removed': duplicates_removed
+        }
+
+        total_entries = len(df)
+        if total_entries == 0:
+            return dbc.Alert("No entries detected in the selected dataset.", color="warning"), {"display": "block"}
+
+        has_title = 0
+        has_abstract = 0
+        has_author = 0
+        has_year = 0
+        has_journal = 0
+        has_doi = 0
+
+        if 'title' in df.columns:
+            meaningful_titles = df['title'].dropna().str.strip().str.len() > 10
+            has_title = int(meaningful_titles.sum())
+
+        if 'abstract' in df.columns:
+            meaningful_abstracts = (
+                df['abstract'].notna() &
+                (df['abstract'].str.strip() != '') &
+                (df['abstract'].str.len() > 50) &
+                (~df['abstract'].str.lower().str.contains('no abstract|abstract not available|n/a', na=False))
+            )
+            has_abstract = int(meaningful_abstracts.sum())
+
+        if 'author' in df.columns:
+            meaningful_authors = (
+                df['author'].notna() &
+                (df['author'].str.strip() != '') &
+                (df['author'].str.len() > 2)
+            )
+            has_author = int(meaningful_authors.sum())
+
+        if 'year' in df.columns:
+            years_numeric = pd.to_numeric(df['year'], errors='coerce')
+            valid_years = (years_numeric >= 1000) & (years_numeric <= 2100)
+            has_year = int(valid_years.sum())
+
+        if 'journal' in df.columns:
+            meaningful_journals = (
+                df['journal'].notna() &
+                (df['journal'].str.strip() != '') &
+                (df['journal'].str.len() > 2)
+            )
+            has_journal = int(meaningful_journals.sum())
+
+        if 'doi' in df.columns:
+            meaningful_dois = (
+                df['doi'].notna() &
+                (df['doi'].str.strip() != '') &
+                df['doi'].str.contains(r'10\.', na=False)
+            )
+            has_doi = int(meaningful_dois.sum())
+
+        year_range = "N/A"
+        if 'year' in df.columns and has_year > 0:
+            years = pd.to_numeric(df['year'], errors='coerce')
+            valid_years_series = years[(years >= 1000) & (years <= 2100)].dropna()
+            if len(valid_years_series) > 0:
+                min_year = int(valid_years_series.min())
+                max_year = int(valid_years_series.max())
+                year_range = f"{min_year} - {max_year}"
+
+        # Show dedup info only if duplicates were actually removed
+        show_dedup = safe_int(dedup_stats.get('duplicates_removed'), 0) > 0
+
+        summary_content = [
+            dbc.Row([
+                dbc.Col([
+                    html.H6("📄 Total Entries", className="text-primary mb-1"),
+                    html.H4(f"{total_entries:,}", className="mb-0"),
+                    html.Small(
+                        f"({dedup_stats.get('total_entries', total_entries):,} original)" if show_dedup else "",
+                        className="text-muted"
+                    )
+                ], width=4),
+                dbc.Col([
+                    html.H6("📅 Year Range", className="text-primary mb-1"),
+                    html.H4(year_range, className="mb-0")
+                ], width=4),
+                dbc.Col([
+                    html.H6("📝 With Abstracts", className="text-primary mb-1"),
+                    html.H4(f"{has_abstract:,} ({has_abstract/total_entries*100:.1f}%)", className="mb-0")
+                ], width=4),
+            ], className="mb-3"),
+            html.Hr(),
+            html.H6("Field Completeness:", className="mb-2"),
+            dbc.Progress([
+                dbc.Progress(value=has_title/total_entries*100, label=f"Titles: {has_title:,}", bar=True, color="success"),
+            ], className="mb-2"),
+            dbc.Progress([
+                dbc.Progress(value=has_author/total_entries*100, label=f"Authors: {has_author:,}", bar=True, color="info"),
+            ], className="mb-2"),
+            dbc.Progress([
+                dbc.Progress(value=has_year/total_entries*100, label=f"Years: {has_year:,}", bar=True, color="warning"),
+            ], className="mb-2"),
+            dbc.Progress([
+                dbc.Progress(value=has_journal/total_entries*100, label=f"Journals: {has_journal:,}", bar=True, color="primary"),
+            ], className="mb-2"),
+            dbc.Progress([
+                dbc.Progress(value=has_doi/total_entries*100, label=f"DOIs: {has_doi:,}", bar=True, color="secondary"),
+            ], className="mb-0"),
+            html.Hr(),
+            html.H6("🔍 Search Readiness:", className="mb-2"),
+            html.Div([
+                dbc.Badge(
+                    f"{has_abstract:,} papers ready for semantic search",
+                    color="success" if has_abstract > total_entries * 0.5 else "warning",
+                    className="me-2 mb-1"
+                ),
+                dbc.Badge(
+                    f"{has_year:,} with valid years for filtering",
+                    color="info",
+                    className="me-2 mb-1"
+                ),
+                dbc.Badge(
+                    f"{total_entries - has_abstract:,} missing meaningful abstracts",
+                    color="secondary",
+                    className="me-2 mb-1"
+                ),
+            ]),
+        ]
+
+        return summary_content, {"display": "block"}
+
+    except Exception as e:
+        import traceback
+        error_msg = f"Error generating summary: {str(e)}"
+        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        return dbc.Alert(error_msg, color="danger"), {"display": "block"}
+
+
 def generate_bibliography_summary(file_path: Path) -> Tuple[Any, Dict[str, Any]]:
     """Generate summary content for a bibliography file."""
     if not file_path.exists():
         error_msg = f"File '{file_path.name}' not found in uploads."
         return dbc.Alert(error_msg, color="warning"), {"display": "block"}
 
-    processor = BibtexProcessor()
-    entries = processor.load_entries(str(file_path), deduplicate=True)
-    df = pd.DataFrame(entries)
-    dedup_stats = processor.get_deduplication_stats()
+    try:
+        processor = BibtexProcessor()
+        entries = processor.load_entries(str(file_path), deduplicate=True)
+        dedup_stats = processor.get_deduplication_stats()
 
-    total_entries = len(df)
-    if total_entries == 0:
-        return dbc.Alert("No entries detected in the selected dataset.", color="warning"), {"display": "block"}
+        # Log only the numeric fields, not the staff_contributors dict
+        total_val = dedup_stats.get('total_entries')
+        dup_val = dedup_stats.get('duplicates_removed')
+        logger.info(f"Dedup stats: total_entries={total_val} (type={type(total_val).__name__}), duplicates_removed={dup_val} (type={type(dup_val).__name__})")
 
-    has_title = 0
-    has_abstract = 0
-    has_author = 0
-    has_year = 0
-    has_journal = 0
-    has_doi = 0
+        df = pd.DataFrame(entries)
 
-    if 'title' in df.columns:
-        meaningful_titles = df['title'].dropna().str.strip().str.len() > 10
-        has_title = meaningful_titles.sum()
+        # Use the DataFrame-based function with proper dedup stats
+        return generate_bibliography_summary_from_df(df, dedup_stats)
+    except Exception as e:
+        import traceback
+        error_msg = f"Error generating summary: {str(e)}"
+        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        return dbc.Alert(error_msg, color="danger"), {"display": "block"}
 
-    if 'abstract' in df.columns:
-        meaningful_abstracts = (
-            df['abstract'].notna() &
-            (df['abstract'].str.strip() != '') &
-            (df['abstract'].str.len() > 50) &
-            (~df['abstract'].str.lower().str.contains('no abstract|abstract not available|n/a', na=False))
-        )
-        has_abstract = meaningful_abstracts.sum()
 
-    if 'author' in df.columns:
-        meaningful_authors = (
-            df['author'].notna() &
-            (df['author'].str.strip() != '') &
-            (df['author'].str.len() > 2)
-        )
-        has_author = meaningful_authors.sum()
+def build_publication_staff_map_from_df(df: pd.DataFrame) -> Optional[str]:
+    """Create a JSON-serialized publication-to-staff mapping from DataFrame with position info."""
+    if df.empty or 'all_staff_ids' not in df.columns:
+        return None
 
-    if 'year' in df.columns:
-        years_numeric = pd.to_numeric(df['year'], errors='coerce')
-        valid_years = (years_numeric >= 1000) & (years_numeric <= 2100)
-        has_year = valid_years.sum()
+    # Get ID column
+    id_col = None
+    for col in ['Publication_ID', 'publication_id', 'ID', 'id']:
+        if col in df.columns:
+            id_col = col
+            break
+    if not id_col:
+        return None
 
-    if 'journal' in df.columns:
-        meaningful_journals = (
-            df['journal'].notna() &
-            (df['journal'].str.strip() != '') &
-            (df['journal'].str.len() > 2)
-        )
-        has_journal = meaningful_journals.sum()
+    def normalize_staff(value):
+        # Check for NaN first (works for scalars and arrays)
+        try:
+            if pd.isna(value):
+                return []
+        except (ValueError, TypeError):
+            # If pd.isna fails on array-like, it's not NaN
+            pass
 
-    if 'doi' in df.columns:
-        meaningful_dois = (
-            df['doi'].notna() &
-            (df['doi'].str.strip() != '') &
-            df['doi'].str.contains(r'10\.', na=False)
-        )
-        has_doi = meaningful_dois.sum()
+        # Handle empty string check for scalars only
+        if isinstance(value, str) and value == '':
+            return []
 
-    year_range = "N/A"
-    if 'year' in df.columns and has_year > 0:
-        years = pd.to_numeric(df['year'], errors='coerce')
-        valid_years = years[(years >= 1000) & (years <= 2100)].dropna()
-        if len(valid_years) > 0:
-            min_year = int(valid_years.min())
-            max_year = int(valid_years.max())
-            year_range = f"{min_year} - {max_year}"
+        # Handle list/array types
+        if isinstance(value, (list, tuple)):
+            cleaned = [str(v).strip() for v in value if v and str(v).strip()]
+            return cleaned
 
-    summary_content = [
-        dbc.Row([
-            dbc.Col([
-                html.H6("📄 Total Entries", className="text-primary mb-1"),
-                html.H4(f"{total_entries:,}", className="mb-0"),
-                html.Small(
-                    f"({dedup_stats['total_entries']:,} original)" if dedup_stats['duplicates_removed'] > 0 else "",
-                    className="text-muted"
-                )
-            ], width=4),
-            dbc.Col([
-                html.H6("📅 Year Range", className="text-primary mb-1"),
-                html.H4(year_range, className="mb-0")
-            ], width=4),
-            dbc.Col([
-                html.H6("📝 With Abstracts", className="text-primary mb-1"),
-                html.H4(f"{has_abstract:,} ({has_abstract/total_entries*100:.1f}%)", className="mb-0")
-            ], width=4),
-        ], className="mb-3"),
-        html.Hr(),
-        html.H6("Field Completeness:", className="mb-2"),
-        dbc.Progress([
-            dbc.Progress(value=has_title/total_entries*100, label=f"Titles: {has_title:,}", bar=True, color="success"),
-        ], className="mb-2"),
-        dbc.Progress([
-            dbc.Progress(value=has_author/total_entries*100, label=f"Authors: {has_author:,}", bar=True, color="info"),
-        ], className="mb-2"),
-        dbc.Progress([
-            dbc.Progress(value=has_year/total_entries*100, label=f"Years: {has_year:,}", bar=True, color="warning"),
-        ], className="mb-2"),
-        dbc.Progress([
-            dbc.Progress(value=has_journal/total_entries*100, label=f"Journals: {has_journal:,}", bar=True, color="primary"),
-        ], className="mb-2"),
-        dbc.Progress([
-            dbc.Progress(value=has_doi/total_entries*100, label=f"DOIs: {has_doi:,}", bar=True, color="secondary"),
-        ], className="mb-0"),
-        html.Hr(),
-        html.H6("🔍 Search Readiness:", className="mb-2"),
-        html.Div([
-            dbc.Badge(
-                f"{has_abstract:,} papers ready for semantic search",
-                color="success" if has_abstract > total_entries * 0.5 else "warning",
-                className="me-2 mb-1"
-            ),
-            dbc.Badge(
-                f"{has_year:,} with valid years for filtering",
-                color="info",
-                className="me-2 mb-1"
-            ),
-            dbc.Badge(
-                f"{total_entries - has_abstract:,} missing meaningful abstracts",
-                color="secondary",
-                className="me-2 mb-1"
-            ),
-        ]),
-    ]
+        # Handle numpy arrays or pandas Series
+        if hasattr(value, 'tolist'):
+            cleaned = [str(v).strip() for v in value.tolist() if v and str(v).strip()]
+            return cleaned
 
-    return summary_content, {"display": "block"}
+        # Handle string representation of lists
+        if isinstance(value, str):
+            value = value.strip()
+            if value.startswith('[') and value.endswith(']'):
+                value = value[1:-1]
+            parts = [p.strip().strip("'\"") for p in value.split(',') if p.strip()]
+            return parts
+
+        # Default: convert to string
+        return [str(value).strip()] if value else []
+
+    # Select columns to include in mapping
+    cols_to_include = [id_col, 'all_staff_ids']
+    optional_cols = ['Author_Position', 'Pub_Max_Position', 'Total_Authors']
+    for col in optional_cols:
+        if col in df.columns:
+            cols_to_include.append(col)
+
+    map_df = df[cols_to_include].copy()
+    map_df['all_staff_ids'] = map_df['all_staff_ids'].apply(normalize_staff)
+    map_df = map_df.explode('all_staff_ids')
+    if map_df.empty:
+        return None
+
+    map_df = map_df[map_df['all_staff_ids'].notna() & (map_df['all_staff_ids'] != '')]
+    if map_df.empty:
+        return None
+
+    map_df = map_df.rename(columns={id_col: 'publication_id', 'all_staff_ids': 'staff_id'})
+    map_df['publication_id'] = map_df['publication_id'].astype(str)
+    map_df['staff_id'] = map_df['staff_id'].astype(str)
+    return map_df.reset_index(drop=True).to_json(orient='split', date_format='iso')
 
 
 def build_publication_staff_map(file_path: Path) -> Optional[str]:
@@ -316,41 +454,7 @@ def build_publication_staff_map(file_path: Path) -> Optional[str]:
         return None
 
     df = pd.DataFrame(entries)
-    if df.empty or 'all_staff_ids' not in df.columns:
-        return None
-
-    id_col = 'Publication_ID' if 'Publication_ID' in df.columns else 'ID' if 'ID' in df.columns else None
-    if not id_col:
-        return None
-
-    def normalize_staff(value: Any) -> List[str]:
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return []
-        if isinstance(value, list):
-            iterable = value
-        else:
-            iterable = str(value).replace(';', ',').split(',')
-        cleaned = []
-        for item in iterable:
-            text = str(item).strip().strip("'\"")
-            if text and text.lower() != 'nan':
-                cleaned.append(text)
-        return cleaned
-
-    map_df = df[[id_col, 'all_staff_ids']].copy()
-    map_df['all_staff_ids'] = map_df['all_staff_ids'].apply(normalize_staff)
-    map_df = map_df.explode('all_staff_ids')
-    if map_df.empty:
-        return None
-
-    map_df = map_df[map_df['all_staff_ids'].notna() & (map_df['all_staff_ids'] != '')]
-    if map_df.empty:
-        return None
-
-    map_df = map_df.rename(columns={id_col: 'publication_id', 'all_staff_ids': 'staff_id'})
-    map_df['publication_id'] = map_df['publication_id'].astype(str)
-    map_df['staff_id'] = map_df['staff_id'].astype(str)
-    return map_df.reset_index(drop=True).to_json(orient='split', date_format='iso')
+    return build_publication_staff_map_from_df(df)
 
 
 PAGE_SIZE = 20
@@ -473,7 +577,8 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
         for entry in initial_manifest
         if entry.get("id")
     ]
-    initial_dataset_value = dataset_options[0]["value"] if dataset_options else None
+    # Don't auto-select a dataset - let users explicitly choose when to load
+    initial_dataset_value = None
     
     # Add initial store for tracking first load
     app.layout = html.Div([
@@ -551,7 +656,7 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                             dbc.Card([
                                 dbc.CardHeader("📊 Bibliography Summary"),
                                 dbc.CardBody([
-                                    html.Div(id="bibliography-summary", children="Upload a file to see summary...")
+                                    html.Div(id="bibliography-summary", children="Upload a new file or select a saved dataset to see summary...")
                                 ])
                             ], className="mt-3", style={"display": "none"}, id="summary-card"),
                             
@@ -578,10 +683,39 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                     dbc.FormText("Filter entries up to this year"),
                                 ], width=6),
                             ]),
-                            
+
+                            # Staff filter
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label([
+                                        "Filter by Staff IDs (Optional) ",
+                                        html.I(className="bi bi-info-circle", id="staff-filter-help-icon",
+                                               style={"cursor": "pointer", "color": "#6c757d"})
+                                    ], html_for="staff-filter-input"),
+                                    dbc.Tooltip(
+                                        [
+                                            html.P("Filter to only show publications from specific staff members."),
+                                            html.P("Enter staff identifiers separated by commas, semicolons, or one per line."),
+                                            html.P(html.Strong("Example:")),
+                                            html.Pre("ABC123, DEF456, GHI789", style={"fontSize": "11px"}),
+                                            html.P("Leave blank to include all staff.", style={"margin-bottom": "0"})
+                                        ],
+                                        target="staff-filter-help-icon",
+                                        placement="top"
+                                    ),
+                                    dcc.Textarea(
+                                        id="staff-filter-input",
+                                        placeholder="Enter staff IDs (e.g., ABC123, DEF456) or leave blank for all",
+                                        style={'width': '100%', 'height': 80, 'fontFamily': 'monospace', 'fontSize': '12px'},
+                                        className="mb-3"
+                                    ),
+                                    dbc.FormText("Filters search results to publications by these staff members"),
+                                ], width=12),
+                            ]),
+
                             html.Hr(),
                             html.P([
-                                html.Strong("Apply Filters Only:"), " Prepares your data for semantic search by applying year filters. Use this for quick searching without tag generation."
+                                html.Strong("Apply Filters Only:"), " Prepares your data for semantic search by applying year and staff filters. Use this for quick searching without tag generation."
                             ], className="text-muted small mb-3"),
                             
                             dbc.Button(
@@ -626,12 +760,19 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                 id='dataset-selector',
                                 options=dataset_options,
                                 value=initial_dataset_value,
-                                placeholder="Select a dataset to load",
+                                placeholder="Select a dataset...",
                                 clearable=True,
                                 className="mb-2"
                             ),
+                            dbc.Button(
+                                "Load Dataset",
+                                id="load-dataset-button",
+                                color="primary",
+                                className="w-100 mb-2",
+                                disabled=True
+                            ),
                             dbc.FormText(
-                                "Select a dataset to reload it without uploading. Embeddings reload automatically when available."
+                                "Select a dataset above, then click 'Load Dataset' to load it. Large files may take 1-2 minutes."
                             ),
                             html.Div(id="embedding-status", className="mt-2 small text-muted"),
                         ])
@@ -2996,13 +3137,14 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          Output('data-store', 'data', allow_duplicate=True),
          Output('tagged-data-store', 'data', allow_duplicate=True),
          Output('embedding-store', 'data')],
-        [Input('dataset-selector', 'value')],
-        [State('dataset-manifest-store', 'data')],
-        prevent_initial_call='initial_duplicate'
+        [Input('load-dataset-button', 'n_clicks')],
+        [State('dataset-selector', 'value'),
+         State('dataset-manifest-store', 'data')],
+        prevent_initial_call=True
     )
-    def load_dataset_from_selection(dataset_id, manifest):
-        """Load dataset data and embeddings when a saved dataset is selected."""
-        if not dataset_id:
+    def load_dataset_from_selection(n_clicks, dataset_id, manifest):
+        """Load dataset data and embeddings when Load Dataset button is clicked."""
+        if not dataset_id or n_clicks is None:
             return (
                 no_update,
                 True,
@@ -3044,7 +3186,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             )
 
         try:
-            entries = process_bibtex_file(str(file_path))
+            # Load with deduplication
+            processor = BibtexProcessor()
+            entries = processor.load_entries(str(file_path), deduplicate=True)
         except Exception as exc:  # pylint: disable=broad-except
             alert = dbc.Alert(f"Failed to load dataset: {exc}", color="danger")
             return (
@@ -3461,30 +3605,76 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         """Download the word cloud."""
         return handle_download_word_cloud(n_clicks, img_data, html_data, wc_type)
     
+    # Enable/disable load button based on dataset selection
+    @app.callback(
+        Output('load-dataset-button', 'disabled'),
+        Input('dataset-selector', 'value'),
+        prevent_initial_call=False
+    )
+    def toggle_load_button(selected_dataset):
+        return selected_dataset is None or selected_dataset == ''
+
     # Bibliography summary callback
     @app.callback(
         [Output('bibliography-summary', 'children'),
          Output('summary-card', 'style'),
          Output('publication-staff-map-store', 'data', allow_duplicate=True)],
-        [Input('dataset-selector', 'value')],
-        [State('dataset-manifest-store', 'data')],
-        prevent_initial_call='initial_duplicate'
+        [Input('data-store', 'data')],
+        prevent_initial_call=True,
+        running=[
+            (Output('bibliography-summary', 'children'),
+             dcc.Loading(
+                 children=html.Div([
+                     html.Div(className="spinner-border text-primary", role="status"),
+                     html.Span("Loading dataset summary...", className="ms-2")
+                 ], className="d-flex align-items-center justify-content-center p-4"),
+                 type="circle"
+             ),
+             None)
+        ]
     )
-    def update_bibliography_summary(selected_dataset_id, manifest):
-        """Generate and display bibliography summary when a dataset is selected."""
-        manifest = manifest or []
-        entry = get_manifest_entry(manifest, selected_dataset_id)
-        if not entry:
+    def update_bibliography_summary(data_store):
+        """Generate and display bibliography summary when data is loaded or filtered."""
+        logger.info(f"Bibliography summary callback triggered, has_data_store={bool(data_store)}")
+
+        # Early exit if no data
+        if not data_store:
+            logger.info("No data in data-store - returning placeholder")
             return "Select or upload a dataset to see summary details.", {"display": "none"}, None
 
+        # Generate summary from data-store
         try:
-            file_path = upload_dir / entry['stored_name']
-            summary_children, style = generate_bibliography_summary(file_path)
-            mapping_json = build_publication_staff_map(file_path)
+            df = pd.read_json(data_store, orient='split')
+            logger.info(f"Generating summary from data-store with {len(df)} entries")
+
+            try:
+                summary_children, style = generate_bibliography_summary_from_df(df)
+                logger.info("Summary generated successfully from data-store")
+            except Exception as sum_exc:
+                logger.error(f"ERROR in generate_bibliography_summary_from_df: {sum_exc}")
+                import traceback
+                logger.error(traceback.format_exc())
+                raise
+
+            # Build staff mapping from DataFrame
+            try:
+                if 'all_staff_ids' in df.columns:
+                    mapping_json = build_publication_staff_map_from_df(df)
+                    logger.info("Staff mapping built successfully from data-store")
+                else:
+                    mapping_json = None
+            except Exception as map_exc:
+                logger.error(f"ERROR in build_publication_staff_map_from_df: {map_exc}")
+                import traceback
+                logger.error(traceback.format_exc())
+                mapping_json = None  # Don't fail the whole callback for this
+
             return summary_children, style, mapping_json
-        except Exception as exc:  # pylint: disable=broad-except
-            error_msg = f"Error generating summary: {exc}"
-            return dbc.Alert(error_msg, color="danger"), {"display": "block"}, None
+        except Exception as exc:
+            logger.error(f"Error in bibliography summary callback: {exc}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return dbc.Alert(f"Error generating summary: {exc}", color="danger"), {"display": "block"}, None
     # Filter-only callback for applying filters without tag generation
     @app.callback(
         [Output('data-store', 'data', allow_duplicate=True),
@@ -3495,20 +3685,46 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          Output('process-progress-text', 'children', allow_duplicate=True)],
         [Input('filter-button', 'n_clicks')],
         [State('upload-bibtex', 'filename'),
+         State('dataset-selector', 'value'),
+         State('dataset-manifest-store', 'data'),
+         State('data-store', 'data'),
          State('min-year', 'value'),
-         State('max-year', 'value')],
+         State('max-year', 'value'),
+         State('staff-filter-input', 'value')],
         prevent_initial_call=True
     )
-    def apply_filters_only(n_clicks, filename, min_year, max_year):
-        """Apply filters to the uploaded file without generating tags."""
-        if n_clicks is None or not filename:
+    def apply_filters_only(n_clicks, filename, dataset_id, manifest, existing_data, min_year, max_year, staff_filter_input):
+        """Apply filters to the uploaded file or selected dataset without generating tags."""
+        import logging
+        std_logger = logging.getLogger(__name__)
+        std_logger.info(f"=== APPLY FILTERS CALLBACK TRIGGERED ===")
+        std_logger.info(f"n_clicks={n_clicks}, filename={filename}, dataset_id={dataset_id}")
+        std_logger.info(f"min_year={min_year}, max_year={max_year}, staff_filter_input={staff_filter_input}")
+
+        if n_clicks is None:
+            std_logger.info("PreventUpdate: n_clicks is None")
             raise PreventUpdate
-            
+
+        # Determine data source: uploaded file, selected dataset, or existing data-store
+        file_path = None
+        if filename:
+            file_path = upload_dir / filename
+            std_logger.info(f"Using uploaded file: {file_path}")
+        elif dataset_id and manifest:
+            # Get file from dataset manifest
+            entry = get_manifest_entry(manifest, dataset_id)
+            if entry:
+                file_path = upload_dir / entry['stored_name']
+                std_logger.info(f"Using dataset file: {file_path}")
+
+        if not file_path:
+            std_logger.info("PreventUpdate: No file source available")
+            raise PreventUpdate
+
         # Reset and initialize progress tracker
         process_progress.__init__()
         process_progress.update(0, "Starting file processing...", status='processing')
-        
-        file_path = upload_dir / filename
+
         logger = ProgressLogger(process_progress)
         
         # Enable interval for real-time updates (will be returned in first callback response)
@@ -3566,7 +3782,44 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     logs = logger.log_info(f"Year filtering: {original_count} entries -> {filtered_count} entries")
                 else:
                     logs = logger.log_info("No entries were filtered out")
-            
+
+            # Apply staff filtering if specified
+            if staff_filter_input and staff_filter_input.strip():
+                logger.set_progress(65)
+                # Parse staff filter input
+                raw_ids = staff_filter_input.replace(';', ',').replace('\n', ',').split(',')
+                staff_filter_ids = [id.strip() for id in raw_ids if id.strip()]
+
+                if staff_filter_ids:
+                    logs = logger.log_info(f"Filtering by {len(staff_filter_ids)} staff IDs...")
+                    original_count = len(entries)
+
+                    # Filter entries
+                    filtered_entries = []
+                    for entry in entries:
+                        # Check all_staff_ids (from deduplication)
+                        if 'all_staff_ids' in entry:
+                            staff_value = entry['all_staff_ids']
+                            if staff_value:
+                                if isinstance(staff_value, list):
+                                    ids = [str(id).strip() for id in staff_value]
+                                else:
+                                    ids = [str(staff_value).strip()]
+                                if any(id in staff_filter_ids for id in ids):
+                                    filtered_entries.append(entry)
+                                    continue
+
+                        # Check single staff ID fields
+                        for field in ['staff_id', 'numberplate', 'NumberPlate']:
+                            if field in entry and entry[field]:
+                                if str(entry[field]).strip() in staff_filter_ids:
+                                    filtered_entries.append(entry)
+                                    break
+
+                    entries = filtered_entries
+                    filtered_count = len(entries)
+                    logs = logger.log_info(f"Staff filtering: {original_count} entries -> {filtered_count} entries")
+
             if not entries:
                 error_msg = "Error: No entries found after filtering"
                 logs = logger.log_error(error_msg)
@@ -3588,25 +3841,45 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             # Count entries with meaningful abstracts for search
             logger.set_progress(80)
             abstract_count = 0
-            searchable_count = 0
+            quality_abstract_count = 0
             if 'abstract' in df.columns:
                 abstract_count = df['abstract'].notna().sum()
                 # Count meaningful abstracts (same criteria as summary)
                 meaningful_abstracts = (
-                    df['abstract'].notna() & 
+                    df['abstract'].notna() &
                     (df['abstract'].str.strip() != '') &
                     (df['abstract'].str.len() > 50) &
                     (~df['abstract'].str.lower().str.contains('no abstract|abstract not available|n/a', na=False))
                 )
-                searchable_count = meaningful_abstracts.sum()
-                logs = logger.log_info(f"{abstract_count} entries have abstracts, {searchable_count} are searchable (50+ chars)")
+                quality_abstract_count = meaningful_abstracts.sum()
+                logs = logger.log_info(f"All {len(df)} entries are searchable. {quality_abstract_count} have quality abstracts (50+ chars), others will use titles/keywords.")
             
             # Save the filtered data without tags
             logger.set_progress(90)
             logs = logger.log_info("Preparing data for analysis...")
+            std_logger.info(f"Final DataFrame size before saving to data-store: {len(df)} entries")
             df_json = df.to_json(orient='split', date_format='iso')
-            
-            success_msg = f"Successfully filtered {len(df)} entries ({searchable_count} with searchable abstracts). Ready for search!"
+
+            # Build success message with filter details
+            filter_details = []
+            if min_year or max_year:
+                if min_year and max_year:
+                    filter_details.append(f"years {min_year}-{max_year}")
+                elif min_year:
+                    filter_details.append(f"from year {min_year}")
+                else:
+                    filter_details.append(f"up to year {max_year}")
+
+            if staff_filter_input and staff_filter_input.strip():
+                raw_ids = staff_filter_input.replace(';', ',').replace('\n', ',').split(',')
+                staff_count = len([id.strip() for id in raw_ids if id.strip()])
+                filter_details.append(f"{staff_count} staff members")
+
+            if filter_details:
+                success_msg = f"Successfully filtered to {len(df)} entries ({', '.join(filter_details)}). {quality_abstract_count} with quality abstracts. Ready for search!"
+            else:
+                success_msg = f"Successfully loaded {len(df)} entries ({quality_abstract_count} with quality abstracts). Ready for search!"
+
             logs = logger.log_success(success_msg)
             
             logger.set_progress(100)
@@ -3639,14 +3912,24 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          Output('search-button-help', 'children')],
         [Input('search-query', 'value'),
          Input('data-store', 'data'),
-         Input('dataset-selector', 'value')]
+         Input('dataset-selector', 'value'),
+         Input('search-methods', 'value'),
+         Input('custom-llm-prompt', 'value')]
     )
-    def update_search_button(query, data, dataset_id):
+    def update_search_button(query, data, dataset_id, search_methods, custom_prompt):
         """Enable search button when query is entered and data is available."""
         has_data = bool(data) or bool(dataset_id)
-        
+
         if not has_data:
             return True, "Select or upload a dataset first to enable search"
+
+        # Check if LLM Only mode with custom prompt (doesn't need search query)
+        is_llm_only = search_methods and 'llm_only' in search_methods
+        has_custom_prompt = custom_prompt and custom_prompt.strip()
+
+        if is_llm_only and has_custom_prompt:
+            # LLM Only with custom prompt doesn't need a search query
+            return False, "Ready to analyze with custom LLM prompt"
         elif not query or not query.strip():
             return True, "Enter a search query (e.g., 'chronic fatigue syndrome')"
         else:
@@ -3678,22 +3961,43 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          State('hybrid-model', 'value'),
          State('llm-threshold', 'value'),
          State('custom-llm-prompt', 'value'),
+         State('staff-filter-input', 'value'),
          State('dataset-selector', 'value'),
          State('dataset-manifest-store', 'data')],
         prevent_initial_call=True
     )
     def initiate_search(n_clicks, query, methods, semantic_threshold, fuzzy_threshold,
-                        max_results, hybrid_model, llm_threshold, custom_llm_prompt, dataset_id, manifest):
+                        max_results, hybrid_model, llm_threshold, custom_llm_prompt, staff_filter_input, dataset_id, manifest):
         """Prime the search progress UI and capture parameters for execution."""
-        if not n_clicks or not query or not query.strip():
+        if not n_clicks:
             raise PreventUpdate
 
+        # Allow empty query if using LLM Only with custom prompt
+        is_llm_only = methods and 'llm_only' in methods
+        has_custom_prompt = custom_llm_prompt and custom_llm_prompt.strip()
+
+        if not query or not query.strip():
+            if not (is_llm_only and has_custom_prompt):
+                raise PreventUpdate
+
         manifest = manifest or []
-        trimmed_query = query.strip()
+        trimmed_query = query.strip() if query else ""
 
         search_progress.__init__()
-        search_progress.update(0, f"Starting search for '{trimmed_query}'...", status='searching')
+        if trimmed_query:
+            search_progress.update(0, f"Starting search for '{trimmed_query}'...", status='searching')
+        else:
+            search_progress.update(0, "Starting LLM analysis with custom prompt...", status='searching')
         state = search_progress.get_state()
+
+        # Parse staff filter input
+        staff_filter_ids = None
+        if staff_filter_input and staff_filter_input.strip():
+            # Split by common separators and clean
+            raw_ids = staff_filter_input.replace(';', ',').replace('\n', ',').split(',')
+            staff_filter_ids = [id.strip() for id in raw_ids if id.strip()]
+            if staff_filter_ids:
+                logger.info(f"Staff filter: {len(staff_filter_ids)} IDs provided")
 
         params = {
             "query": trimmed_query,
@@ -3704,6 +4008,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             "hybrid_model": hybrid_model,
             "llm_threshold": llm_threshold,
             "custom_llm_prompt": custom_llm_prompt.strip() if custom_llm_prompt else None,
+            "staff_filter_ids": staff_filter_ids,
             "dataset_id": dataset_id,
             "manifest": manifest,
             "started_at": datetime.utcnow().isoformat()
@@ -3780,8 +4085,11 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         llm_threshold = params.get('llm_threshold')
         dataset_id = params.get('dataset_id')
         manifest = params.get('manifest', [])
+        custom_llm_prompt = params.get('custom_llm_prompt', '').strip()
 
-        if not query:
+        # Allow empty query if using LLM Only with custom prompt
+        is_llm_only = 'llm_only' in methods
+        if not query and not (is_llm_only and custom_llm_prompt):
             return (
                 "",
                 "Ready to search...",
@@ -4091,6 +4399,56 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             else:
                 results = pd.DataFrame(results_map.values()) if results_map else pd.DataFrame()
 
+            # Apply staff filter if provided
+            staff_filter_ids = params.get('staff_filter_ids')
+            if staff_filter_ids and not results.empty:
+                original_count = len(results)
+
+                def matches_staff_filter(row):
+                    """Check if row matches any of the filtered staff IDs."""
+                    # Check all_staff_ids column (array format from deduplication)
+                    if 'all_staff_ids' in row.index:
+                        staff_value = row['all_staff_ids']
+
+                        # Safe check for NaN/None - handle arrays/scalars
+                        try:
+                            is_na = pd.isna(staff_value)
+                            # If it's an array, check if all are NaN
+                            if hasattr(is_na, '__iter__') and not isinstance(is_na, str):
+                                is_na = all(is_na)
+                        except (ValueError, TypeError):
+                            is_na = False
+
+                        if not is_na:
+                            # Handle numpy arrays
+                            if hasattr(staff_value, 'tolist'):
+                                ids = [str(id).strip() for id in staff_value.tolist() if id]
+                            elif isinstance(staff_value, str):
+                                # Parse string representation of list
+                                staff_value = staff_value.strip('[]').replace("'", "").replace('"', '')
+                                ids = [id.strip() for id in staff_value.split(',') if id.strip()]
+                            elif isinstance(staff_value, (list, tuple)):
+                                ids = [str(id).strip() for id in staff_value if id]
+                            else:
+                                ids = [str(staff_value).strip()]
+                            return any(id in staff_filter_ids for id in ids)
+
+                    # Check single staff ID columns
+                    for col in ['staff_id', 'numberplate', 'NumberPlate']:
+                        if col in row.index:
+                            try:
+                                if pd.notna(row[col]):
+                                    if str(row[col]).strip() in staff_filter_ids:
+                                        return True
+                            except (ValueError, TypeError):
+                                pass
+
+                    return False
+
+                results = results[results.apply(matches_staff_filter, axis=1)].copy()
+                filtered_count = len(results)
+                logger.log_info(f"Staff filter applied: {filtered_count}/{original_count} publications match {len(staff_filter_ids)} staff IDs")
+
             progress = 90
             logger.set_progress(progress)
 
@@ -4098,11 +4456,15 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 logs = logger.log_info('No results found with current settings')
                 search_progress.update(100, 'No results found', status='complete')
                 empty_pagination = {'page': 1, 'page_size': PAGE_SIZE, 'total_results': 0}
+
+                # Customize message if staff filter was applied
+                no_results_msg = f"No results found for '{query}' with the current settings."
+                if staff_filter_ids:
+                    no_results_msg += f" (Staff filter applied: {len(staff_filter_ids)} IDs)"
+                no_results_msg += " Try lowering the thresholds, using different search methods, or adjusting the staff filter."
+
                 return (
-                    dbc.Alert(
-                        f"No results found for '{query}' with the current settings. Try lowering the thresholds or using different search methods.",
-                        color='warning'
-                    ),
+                    dbc.Alert(no_results_msg, color='warning'),
                     "",
                     100,
                     'Search complete - No results',
@@ -4228,7 +4590,9 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 "methods_selected": methods,
                 "staff_total": staff_total,
                 "avg_publications_per_staff": avg_pubs,
-                "display_limit": display_limit if display_limit else None
+                "display_limit": display_limit if display_limit else None,
+                "staff_filter_applied": bool(staff_filter_ids),
+                "staff_filter_count": len(staff_filter_ids) if staff_filter_ids else 0
             }
             download_results_disabled = total_results == 0
             download_staff_disabled = staff_summary.empty
@@ -4583,25 +4947,212 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
         Output('download-search-results', 'data'),
         [Input('download-search-csv-button', 'n_clicks')],
         [State('search-results-store', 'data'),
-         State('search-query', 'value')],
+         State('search-query', 'value'),
+         State('publication-staff-map-store', 'data')],
         prevent_initial_call=True
     )
-    def download_search_results_csv(n_clicks, search_results_data, query):
+    def download_search_results_csv(n_clicks, search_results_data, query, pub_staff_map_data):
         """Download search results as CSV file."""
         if not n_clicks or not search_results_data:
             raise PreventUpdate
-        
+
         try:
             results_df = pd.read_json(search_results_data, orient='split')
             if results_df.empty:
                 raise PreventUpdate
 
-            desired_columns = ['year', 'title', 'abstract', 'journal', 'author']
-            for col in desired_columns:
-                if col not in results_df.columns:
-                    results_df[col] = ""
+            # Load publication-staff mapping if available
+            pub_staff_map = None
+            if pub_staff_map_data:
+                try:
+                    import io
+                    pub_staff_map = pd.read_json(io.StringIO(pub_staff_map_data), orient='split')
+                except Exception:
+                    pub_staff_map = None
 
-            export_df = results_df[desired_columns].copy()
+            # Determine publication ID column
+            pub_id_col = None
+            for col in ['Publication_ID', 'publication_id', 'ID', 'id']:
+                if col in results_df.columns:
+                    pub_id_col = col
+                    break
+
+            # If we have publication IDs and staff data, aggregate by publication
+            if pub_id_col and 'all_staff_ids' in results_df.columns:
+                # Create aggregated rows for each unique publication
+                aggregated_rows = []
+
+                for pub_id, group in results_df.groupby(pub_id_col):
+                    row = group.iloc[0].to_dict()  # Take first row as base
+
+                    # Collect all staff IDs
+                    all_staff = []
+                    for _, pub_row in group.iterrows():
+                        staff_val = pub_row.get('all_staff_ids')
+
+                        # Safe check for NaN/None - handle arrays/scalars
+                        try:
+                            is_na = pd.isna(staff_val)
+                            # If it's an array, check if all are NaN
+                            if hasattr(is_na, '__iter__') and not isinstance(is_na, str):
+                                is_na = all(is_na)
+                        except (ValueError, TypeError):
+                            is_na = False
+
+                        if not is_na:
+                            if isinstance(staff_val, list):
+                                all_staff.extend([str(s).strip() for s in staff_val if s])
+                            elif hasattr(staff_val, 'tolist'):
+                                all_staff.extend([str(s).strip() for s in staff_val.tolist() if s])
+                            elif staff_val:
+                                all_staff.append(str(staff_val).strip())
+                    row['staff_ids'] = ', '.join(sorted(set(all_staff))) if all_staff else ''
+
+                    # Get position information for ALL staff on this publication (not just filtered)
+                    if pub_staff_map is not None and not pub_staff_map.empty:
+                        # Look up all staff for this publication from the full mapping
+                        pub_staff_rows = pub_staff_map[pub_staff_map['publication_id'] == str(pub_id)]
+
+                        if not pub_staff_rows.empty and 'Author_Position' in pub_staff_rows.columns:
+                            # Get positions for ALL staff on this paper
+                            all_positions = pd.to_numeric(pub_staff_rows['Author_Position'], errors='coerce').dropna()
+                            all_positions = all_positions[all_positions >= 1]  # Filter out invalid positions
+
+                            if len(all_positions) > 0:
+                                row['min_author_position'] = int(all_positions.min())
+                                row['max_author_position'] = int(all_positions.max())
+                                row['any_first_author'] = 1 in all_positions.values
+                            else:
+                                row['min_author_position'] = ''
+                                row['max_author_position'] = ''
+                                row['any_first_author'] = False
+
+                            # Check if any staff is last author
+                            if 'Pub_Max_Position' in pub_staff_rows.columns:
+                                max_pos = pd.to_numeric(pub_staff_rows['Pub_Max_Position'].iloc[0], errors='coerce')
+                                if pd.notna(max_pos) and len(all_positions) > 0:
+                                    row['any_last_author'] = max_pos in all_positions.values
+                                else:
+                                    row['any_last_author'] = False
+                            else:
+                                row['any_last_author'] = False
+
+                            # Get total authors
+                            if 'Total_Authors' in pub_staff_rows.columns:
+                                row['total_authors'] = pub_staff_rows['Total_Authors'].iloc[0]
+                            elif 'Pub_Max_Position' in pub_staff_rows.columns:
+                                row['total_authors'] = pub_staff_rows['Pub_Max_Position'].iloc[0]
+                            else:
+                                row['total_authors'] = ''
+                        else:
+                            # Fallback: use positions from search results only
+                            if 'Author_Position' in group.columns:
+                                positions = pd.to_numeric(group['Author_Position'], errors='coerce').dropna()
+                                positions = positions[positions >= 1]
+                                if len(positions) > 0:
+                                    row['min_author_position'] = int(positions.min())
+                                    row['max_author_position'] = int(positions.max())
+                                    row['any_first_author'] = 1 in positions.values
+                                else:
+                                    row['min_author_position'] = ''
+                                    row['max_author_position'] = ''
+                                    row['any_first_author'] = False
+                            else:
+                                row['min_author_position'] = ''
+                                row['max_author_position'] = ''
+                                row['any_first_author'] = False
+
+                            if 'Pub_Max_Position' in group.columns and 'Author_Position' in group.columns:
+                                max_pos = pd.to_numeric(group['Pub_Max_Position'].iloc[0], errors='coerce')
+                                positions = pd.to_numeric(group['Author_Position'], errors='coerce').dropna()
+                                positions = positions[positions >= 1]
+                                if pd.notna(max_pos) and len(positions) > 0:
+                                    row['any_last_author'] = max_pos in positions.values
+                                else:
+                                    row['any_last_author'] = False
+                            else:
+                                row['any_last_author'] = False
+
+                            if 'Total_Authors' in group.columns:
+                                row['total_authors'] = group['Total_Authors'].iloc[0]
+                            elif 'Pub_Max_Position' in group.columns:
+                                row['total_authors'] = group['Pub_Max_Position'].iloc[0]
+                            else:
+                                row['total_authors'] = ''
+                    else:
+                        # No mapping available, use search results only
+                        if 'Author_Position' in group.columns:
+                            positions = pd.to_numeric(group['Author_Position'], errors='coerce').dropna()
+                            positions = positions[positions >= 1]
+                            if len(positions) > 0:
+                                row['min_author_position'] = int(positions.min())
+                                row['max_author_position'] = int(positions.max())
+                                row['any_first_author'] = 1 in positions.values
+                            else:
+                                row['min_author_position'] = ''
+                                row['max_author_position'] = ''
+                                row['any_first_author'] = False
+                        else:
+                            row['min_author_position'] = ''
+                            row['max_author_position'] = ''
+                            row['any_first_author'] = False
+
+                        if 'Pub_Max_Position' in group.columns and 'Author_Position' in group.columns:
+                            max_pos = pd.to_numeric(group['Pub_Max_Position'].iloc[0], errors='coerce')
+                            positions = pd.to_numeric(group['Author_Position'], errors='coerce').dropna()
+                            positions = positions[positions >= 1]
+                            if pd.notna(max_pos) and len(positions) > 0:
+                                row['any_last_author'] = max_pos in positions.values
+                            else:
+                                row['any_last_author'] = False
+                        else:
+                            row['any_last_author'] = False
+
+                        if 'Total_Authors' in group.columns:
+                            row['total_authors'] = group['Total_Authors'].iloc[0]
+                        elif 'Pub_Max_Position' in group.columns:
+                            row['total_authors'] = group['Pub_Max_Position'].iloc[0]
+                        else:
+                            row['total_authors'] = ''
+
+                    aggregated_rows.append(row)
+
+                export_df = pd.DataFrame(aggregated_rows)
+            else:
+                export_df = results_df.copy()
+
+            # Base columns
+            desired_columns = ['year', 'title', 'journal', 'abstract']
+
+            # Add staff aggregation columns if they were created
+            staff_columns = ['staff_ids', 'min_author_position', 'max_author_position',
+                           'any_first_author', 'any_last_author', 'total_authors']
+            for col in staff_columns:
+                if col in export_df.columns:
+                    desired_columns.append(col)
+
+            # Add DOI if available
+            if 'Ref_DOI' in export_df.columns:
+                desired_columns.append('Ref_DOI')
+
+            # Add LLM analysis columns if present (for LLM Only or Hybrid searches)
+            llm_columns = ['llm_relevance_score', 'llm_reasoning', 'llm_key_concepts']
+            for col in llm_columns:
+                if col in export_df.columns:
+                    desired_columns.append(col)
+
+            # Add search scores if present
+            score_columns = ['search_score', 'semantic_score', 'hybrid_score', 'llm_only_score']
+            for col in score_columns:
+                if col in export_df.columns:
+                    desired_columns.append(col)
+
+            # Ensure all columns exist
+            for col in desired_columns:
+                if col not in export_df.columns:
+                    export_df[col] = ""
+
+            export_df = export_df[desired_columns].copy()
             export_df = export_df.drop_duplicates(subset=['title', 'year']).reset_index(drop=True)
 
             safe_query = (query or "search")
@@ -4611,7 +5162,10 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             filename = f"{clean_query}_results_{len(export_df)}papers.csv"
             return dcc.send_data_frame(export_df.to_csv, filename=filename, index=False)
 
-        except Exception:
+        except Exception as e:
+            import traceback
+            print(f"Download error: {e}")
+            print(traceback.format_exc())
             raise PreventUpdate
 
     @app.callback(
@@ -4805,15 +5359,16 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
     # Note: Interval enabling/disabling is handled by the main processing callbacks above
 
 
-def run_dashboard(debug: bool = False, port: int = 8050) -> None:
+def run_dashboard(debug: bool = False, port: int = 8050, host: str = "127.0.0.1") -> None:
     """Run the dashboard.
-    
+
     Args:
         debug: Whether to run in debug mode
         port: Port to run the dashboard on
+        host: Host to bind to (use "0.0.0.0" for WSL/network access)
     """
     app = create_dashboard(debug=debug, port=port)
-    app.run(debug=debug, port=port)
+    app.run(debug=debug, port=port, host=host)
 
 if __name__ == "__main__":
     run_dashboard(debug=True)

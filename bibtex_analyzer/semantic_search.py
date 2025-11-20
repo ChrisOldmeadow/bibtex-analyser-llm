@@ -907,9 +907,12 @@ Be precise and concise."""
             List of (index, llm_score) tuples
         """
         if logger:
-            _log_info(logger, f"🤖 LLM-ONLY SEARCH: '{query}' with GPT-{self.llm_model}")
-            _log_info(logger, f"📊 Will analyze ALL {len(df)} papers (no embedding filter)")
-            _log_info(logger, f"⚠️ This will be expensive but highest quality!")
+            if query:
+                _log_info(logger, f"🤖 LLM-ONLY SEARCH: '{query}' with GPT-{self.llm_model}")
+            else:
+                _log_info(logger, f"🤖 LLM-ONLY ANALYSIS with custom prompt using GPT-{self.llm_model}")
+            _log_info(logger, f"📊 Will analyze {len(df)} papers from your current dataset")
+            _log_info(logger, f"⚠️ This will use API credits but provides highest quality!")
             
             # Cost estimate
             estimated_cost = len(df) * 0.0005  # Rough estimate
@@ -924,7 +927,10 @@ Be precise and concise."""
         
         # Analyze ALL papers with LLM
         analyzed_papers = self.llm_analyze_relevance(query, all_papers, logger=logger, custom_prompt=custom_prompt)
-        
+
+        # Store analyzed papers for dashboard access
+        self._last_analyzed_papers = analyzed_papers
+
         # Filter by relevance threshold and sort
         results = []
         for paper in analyzed_papers:

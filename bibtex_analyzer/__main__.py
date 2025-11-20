@@ -159,6 +159,12 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         help="Port to run the dashboard on (default: 8050)"
     )
     dashboard_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1, use 0.0.0.0 for WSL)"
+    )
+    dashboard_parser.add_argument(
         "--debug",
         action="store_true",
         help="Run in debug mode"
@@ -458,13 +464,13 @@ def search_command(args: argparse.Namespace) -> None:
 
 def dashboard_command(args: argparse.Namespace) -> None:
     """Handle the dashboard command.
-    
+
     Args:
         args: Parsed command line arguments
     """
     try:
         from .dashboard import run_dashboard
-        run_dashboard(debug=args.debug, port=args.port)
+        run_dashboard(debug=args.debug, port=args.port, host=args.host)
     except ImportError as e:
         logger.error("Dashboard dependencies not installed. Install with 'pip install dash dash-bootstrap-components plotly pandas'")
 
