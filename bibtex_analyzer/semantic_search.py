@@ -582,14 +582,15 @@ class HybridSemanticSearcher(SemanticSearcher):
         except Exception as e:
             logger.warning(f"Failed to save LLM cache file {cache_file}: {e}")
     
-    def llm_analyze_relevance(self, query: str, papers: List[Dict], logger=None) -> List[Dict]:
+    def llm_analyze_relevance(self, query: str, papers: List[Dict], logger=None, custom_prompt: Optional[str] = None) -> List[Dict]:
         """Use LLM to analyze paper relevance with reasoning.
-        
+
         Args:
             query: Search query
             papers: List of paper dictionaries
             logger: Optional logger for progress tracking
-            
+            custom_prompt: Optional custom prompt template. If provided, must include {query}, {title}, {abstract} placeholders
+
         Returns:
             List of papers with added LLM analysis
         """
@@ -628,7 +629,12 @@ class HybridSemanticSearcher(SemanticSearcher):
                 continue
             
             # LLM analysis prompt
-            prompt = f"""Analyze this research paper's relevance to the query.
+            if custom_prompt:
+                # Use custom prompt with placeholder substitution
+                prompt = custom_prompt.format(query=query, title=title, abstract=abstract)
+            else:
+                # Default relevance analysis prompt
+                prompt = f"""Analyze this research paper's relevance to the query.
 
 Query: "{query}"
 
@@ -736,9 +742,10 @@ Be precise and concise."""
         precomputed_embeddings: Optional[np.ndarray] = None,
         prompt_on_overflow: bool = False,
         semantic_only: bool = False,
+        custom_prompt: Optional[str] = None,
     ) -> List[Tuple[int, float]]:
         """Perform hybrid search: embeddings for speed + LLM for precision.
-        
+
         Args:
             query: Search query
             df: DataFrame with paper data
@@ -749,7 +756,8 @@ Be precise and concise."""
             precomputed_embeddings: Optional embeddings aligned with df
             prompt_on_overflow: Prompt before truncating candidates to the cap
             semantic_only: Skip GPT rerank and rely on embeddings only
-            
+            custom_prompt: Optional custom LLM prompt (must include {query}, {title}, {abstract})
+
         Returns:
             List of (index, combined_score) tuples
         """
@@ -834,7 +842,7 @@ Be precise and concise."""
             analyzed_papers = []
         else:
             # LLM analysis of candidates
-            analyzed_papers = self.llm_analyze_relevance(query, candidate_papers, logger=logger)
+            analyzed_papers = self.llm_analyze_relevance(query, candidate_papers, logger=logger, custom_prompt=custom_prompt)
         
         # Store analyzed papers for dashboard access
         self._last_analyzed_papers = analyzed_papers
@@ -883,17 +891,18 @@ Be precise and concise."""
         
         return final_results
     
-    def llm_only_search(self, query: str, df: pd.DataFrame, max_results: int = 20, 
-                       relevance_threshold: float = 6.0, logger=None) -> List[Tuple[int, float]]:
+    def llm_only_search(self, query: str, df: pd.DataFrame, max_results: int = 20,
+                       relevance_threshold: float = 6.0, logger=None, custom_prompt: Optional[str] = None) -> List[Tuple[int, float]]:
         """Perform LLM-only search: analyze all papers with GPT for maximum quality.
-        
+
         Args:
             query: Search query
             df: DataFrame with paper data
             max_results: Maximum final results to return
             relevance_threshold: Minimum LLM relevance score (0-10) to include
             logger: Optional logger for progress tracking
-            
+            custom_prompt: Optional custom LLM prompt (must include {query}, {title}, {abstract})
+
         Returns:
             List of (index, llm_score) tuples
         """
@@ -914,7 +923,7 @@ Be precise and concise."""
             all_papers.append(paper)
         
         # Analyze ALL papers with LLM
-        analyzed_papers = self.llm_analyze_relevance(query, all_papers, logger=logger)
+        analyzed_papers = self.llm_analyze_relevance(query, all_papers, logger=logger, custom_prompt=custom_prompt)
         
         # Filter by relevance threshold and sort
         results = []

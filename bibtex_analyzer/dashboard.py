@@ -724,7 +724,48 @@ def create_dashboard(debug: bool = False, port: int = 8050) -> dash.Dash:
                                         ),
                                     ], width=6),
                                 ]),
-                                
+
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label([
+                                            "Custom LLM Prompt (Optional) ",
+                                            html.I(className="bi bi-info-circle", id="custom-prompt-help-icon",
+                                                   style={"cursor": "pointer", "color": "#6c757d"})
+                                        ], html_for="custom-llm-prompt"),
+                                        dbc.Tooltip(
+                                            [
+                                                html.P("Leave blank to use default relevance scoring."),
+                                                html.P("For custom analysis (e.g., facility detection), provide a prompt that includes:"),
+                                                html.Ul([
+                                                    html.Li("{query} - will be replaced with search term"),
+                                                    html.Li("{title} - will be replaced with paper title"),
+                                                    html.Li("{abstract} - will be replaced with paper abstract")
+                                                ]),
+                                                html.P(html.Strong("Example:"), style={"margin-bottom": "5px"}),
+                                                html.Pre("Analyze if this paper used imaging facilities (MRI, CT, etc).\\n\\nQuery: {query}\\nTitle: {title}\\nAbstract: {abstract}\\n\\nProvide JSON: {{\"llm_relevance_score\": 0-10, \"llm_reasoning\": \"...\", \"llm_key_concepts\": [...]}}", style={"fontSize": "11px"})
+                                            ],
+                                            target="custom-prompt-help-icon",
+                                            placement="top"
+                                        ),
+                                        dcc.Textarea(
+                                            id="custom-llm-prompt",
+                                            placeholder="""Example - Imaging Facility Detection:
+
+Analyze if this paper used imaging facilities (MRI, CT scan, microscopy, X-ray, ultrasound, PET scan, etc).
+
+Query: "{query}"
+Title: {title}
+Abstract: {abstract}
+
+Provide JSON: {{"llm_relevance_score": 0-10, "llm_reasoning": "brief explanation", "llm_key_concepts": ["concept1", "concept2"]}}
+
+Leave blank for default relevance analysis. Must include {{query}}, {{title}}, {{abstract}} placeholders.""",
+                                            style={'width': '100%', 'height': 140, 'fontFamily': 'monospace', 'fontSize': '12px'},
+                                            className="mb-3"
+                                        ),
+                                    ], width=12),
+                                ]),
+
                                 dbc.Row([
                                     dbc.Col([
                                         dbc.Button(
@@ -3636,12 +3677,13 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
          State('max-results', 'value'),
          State('hybrid-model', 'value'),
          State('llm-threshold', 'value'),
+         State('custom-llm-prompt', 'value'),
          State('dataset-selector', 'value'),
          State('dataset-manifest-store', 'data')],
         prevent_initial_call=True
     )
     def initiate_search(n_clicks, query, methods, semantic_threshold, fuzzy_threshold,
-                        max_results, hybrid_model, llm_threshold, dataset_id, manifest):
+                        max_results, hybrid_model, llm_threshold, custom_llm_prompt, dataset_id, manifest):
         """Prime the search progress UI and capture parameters for execution."""
         if not n_clicks or not query or not query.strip():
             raise PreventUpdate
@@ -3661,6 +3703,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
             "max_results": max_results,
             "hybrid_model": hybrid_model,
             "llm_threshold": llm_threshold,
+            "custom_llm_prompt": custom_llm_prompt.strip() if custom_llm_prompt else None,
             "dataset_id": dataset_id,
             "manifest": manifest,
             "started_at": datetime.utcnow().isoformat()
@@ -3978,6 +4021,7 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                 if candidate_limit < 50:
                     candidate_limit = 50
                 logger.log_info("Running hybrid rerank (embeddings + LLM) on collected candidates")
+                custom_prompt = params.get('custom_llm_prompt')
                 hybrid_results = searcher.hybrid_search(
                     query=query,
                     df=df,
@@ -3985,7 +4029,8 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
                     max_embedding_candidates=candidate_limit,
                     max_results=None,
                     logger=logger,
-                    precomputed_embeddings=embeddings
+                    precomputed_embeddings=embeddings,
+                    custom_prompt=custom_prompt
                 )
                 analyzed_papers = getattr(searcher, '_last_analyzed_papers', [])
                 llm_lookup = {p.get('original_index'): p for p in analyzed_papers if p.get('original_index') is not None}
@@ -4010,12 +4055,14 @@ def register_callbacks(app: dash.Dash, upload_dir: Path) -> None:
 
             if include_llm_only:
                 logger.log_info("Running full LLM analysis (LLM Only mode)")
+                custom_prompt = params.get('custom_llm_prompt')
                 llm_results = searcher.llm_only_search(
                     query=query,
                     df=df,
                     max_results=None,
                     relevance_threshold=llm_threshold,
-                    logger=logger
+                    logger=logger,
+                    custom_prompt=custom_prompt
                 )
                 analyzed_papers = getattr(searcher, '_last_analyzed_papers', [])
                 llm_lookup = {p.get('original_index'): p for p in analyzed_papers if p.get('original_index') is not None}
